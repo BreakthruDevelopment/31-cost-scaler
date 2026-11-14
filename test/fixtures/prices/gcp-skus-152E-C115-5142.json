@@ -1,0 +1,149 @@
+{
+ "skus": [
+  {
+   "name": "services/x/skus/S0006",
+   "skuId": "S0006-SYN",
+   "description": "Services CPU (Request-based billing) in us-central1",
+   "category": {
+    "serviceDisplayName": "Cloud Run",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "s",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 24000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0007",
+   "skuId": "S0007-SYN",
+   "description": "Services Memory (Request-based billing) in us-central1",
+   "category": {
+    "serviceDisplayName": "Cloud Run",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.s",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 2500
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0008",
+   "skuId": "S0008-SYN",
+   "description": "Services Requests",
+   "category": {
+    "serviceDisplayName": "Cloud Run",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "count",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 400
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0009",
+   "skuId": "S0009-SYN",
+   "description": "Services CPU (Instance-based billing) in us-central1",
+   "category": {
+    "serviceDisplayName": "Cloud Run",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "s",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 18000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  }
+ ],
+ "nextPageToken": ""
+}

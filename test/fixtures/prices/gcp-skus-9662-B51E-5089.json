@@ -1,0 +1,257 @@
+{
+ "skus": [
+  {
+   "name": "services/x/skus/S0010",
+   "skuId": "S0010-SYN",
+   "description": "Cloud SQL for PostgreSQL: Zonal - vCPU in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 41300000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0011",
+   "skuId": "S0011-SYN",
+   "description": "Cloud SQL for PostgreSQL: Zonal - RAM in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 7000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0012",
+   "skuId": "S0012-SYN",
+   "description": "Cloud SQL for PostgreSQL: Regional - vCPU in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 82600000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0013",
+   "skuId": "S0013-SYN",
+   "description": "Cloud SQL for PostgreSQL: Regional - RAM in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 14000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0014",
+   "skuId": "S0014-SYN",
+   "description": "Cloud SQL for PostgreSQL: Zonal - SSD storage in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.mo",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 170000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0015",
+   "skuId": "S0015-SYN",
+   "description": "Cloud SQL for PostgreSQL: Regional - SSD storage in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.mo",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 340000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0016",
+   "skuId": "S0016-SYN",
+   "description": "Cloud SQL for MySQL: Zonal - vCPU in Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud SQL",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 41300000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  }
+ ],
+ "nextPageToken": ""
+}

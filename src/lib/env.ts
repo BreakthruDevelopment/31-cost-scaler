@@ -26,6 +26,10 @@ const schema = z.object({
   AI_EMBED_MODEL: z.string().optional(),
   // Provider call timeout. 20 s keeps AI calls inside Lambda's 29 s limit (route maxDuration is 25 s).
   AI_TIMEOUT_MS: z.coerce.number().int().positive().max(22000).default(20000),
+  // Cost Scaler price refresh. The bearer token the scheduler sends, and the Google Cloud Billing Catalog API key.
+  // Both are optional: without the token only an admin can refresh; without the key Google Cloud shows "prices unavailable".
+  COST_SCALER_REFRESH_TOKEN: z.string().min(16).optional(),
+  COST_SCALER_GCP_PRICING_API_KEY: z.string().min(8).optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
