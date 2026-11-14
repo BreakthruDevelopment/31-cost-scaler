@@ -51,6 +51,8 @@ jobs:
       - run: pnpm build
       - name: Migrate
         run: pnpm db:migrate
+      - name: Seed the footprint fixture (no network)
+        run: pnpm seed:footprint
       - name: Start the built app
         run: |
           cp -r public .next/standalone/

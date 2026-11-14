@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against a running app (local, CI, or a deployed URL).
-# Signs up two users over HTTP and proves one can't delete the other's item.
+# Signs up two users over HTTP: one creates a scenario (idempotently), the other can't see or change it.
+# CI seeds the footprint first (pnpm seed:footprint); the deployed app imports it itself.
 #   BASE_URL=https://app7.breakthruventures.ai ./scripts/smoke.sh
 set -euo pipefail
 
@@ -54,55 +55,62 @@ signup "$JAR_A" "smoke-a-$RUN_ID@example.test"
 signup "$JAR_B" "smoke-b-$RUN_ID@example.test"
 pass "two users signed up"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/items")
-[ "$code" = "401" ] || fail "anonymous list should be 401, got $code"
-pass "anonymous access refused"
+SPEC='{"users":{"mau":500,"requestsPerUser":200},"compute":{"kind":"serverless","instances":1,"vcpu":1,"memoryGb":0.5,"busyFraction":0.1},"containers":{"count":0,"vcpu":0.25,"memoryGb":0.5,"busyFraction":0.1},"database":{"vcpu":1,"memoryGb":1,"storageGb":20,"readReplicas":0},"storage":{"objectGb":10,"egressGb":20},"identity":{"mau":500},"loadBalancers":0}'
+id_of() { sed -E 's/.*"scenario":\{"id":"([^"]+)".*/\1/'; }
+status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' \
-  -d '{"title":"x"}' "$BASE_URL/api/items")
-[ "$code" = "403" ] || fail "cross-origin create should be 403, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' \
-  -d '{"title":"x"}' "$BASE_URL/api/items")
-[ "$code" = "403" ] || fail "create without an Origin should be 403, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{nope' "$BASE_URL/api/items")
-[ "$code" = "400" ] || fail "malformed JSON should be 400, got $code"
-code=$(head -c 40000 /dev/zero | tr '\0' 'x' | curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  --data-binary @- "$BASE_URL/api/items")
+# Public data
+footprint=$(curl -fsS "$BASE_URL/api/footprint") || fail "GET /api/footprint failed"
+echo "$footprint" | grep -q '"name":"' || fail "/api/footprint lists no apps (CI seeds them with pnpm seed:footprint): $footprint"
+pass "public footprint lists apps"
+curl -fsS "$BASE_URL/api/prices" | grep -q '"prices":\[' || fail "/api/prices should return a prices array"
+pass "public price table responds"
+
+# Signed-out and admin-only
+[ "$(status "$BASE_URL/api/scenarios")" = "401" ] || fail "anonymous scenario list should be 401"
+[ "$(status "$BASE_URL/api/admin/stats")" = "401" ] || fail "anonymous admin stats should be 401"
+[ "$(status -b "$JAR_A" "$BASE_URL/api/admin/stats")" = "403" ] || fail "a plain user's admin stats should be 403"
+pass "anonymous access refused; admin stats are admin only"
+
+# Hostile writes
+[ "$(status -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d "{\"name\":\"x\",\"spec\":$SPEC}" "$BASE_URL/api/scenarios")" = "403" ] || fail "cross-origin create should be 403"
+[ "$(status -b "$JAR_A" -H 'content-type: application/json' -d "{\"name\":\"x\",\"spec\":$SPEC}" "$BASE_URL/api/scenarios")" = "403" ] || fail "create without an Origin should be 403"
+[ "$(status -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{nope' "$BASE_URL/api/scenarios")" = "400" ] || fail "malformed JSON should be 400"
+code=$(head -c 40000 /dev/zero | tr '\0' 'x' | curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" --data-binary @- "$BASE_URL/api/scenarios")
 [ "$code" = "413" ] || fail "oversized body should be 413, got $code"
 pass "cross-origin, malformed and oversized writes refused"
 
-item=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{"title":"smoke item"}' "$BASE_URL/api/items") || fail "create item failed"
-id=$(echo "$item" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-[ -n "$id" ] || fail "no item id in $item"
-pass "user A created an item"
+[ "$(status -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"name\":\"nul\\u0000byte\",\"spec\":$SPEC}" "$BASE_URL/api/scenarios")" = "400" ] || fail "a NUL byte in a name should be 400"
+[ "$(status -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"name":"bad spec","spec":{"users":{"mau":99999999,"requestsPerUser":1}}}' "$BASE_URL/api/scenarios")" = "400" ] || fail "an out-of-range spec should be 400"
+pass "NUL byte and bad spec rejected with 400, not 500"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{"title":"nul\u0000byte"}' "$BASE_URL/api/items")
-[ "$code" = "400" ] || fail "a NUL byte in a title should be 400, got $code"
-pass "NUL byte rejected with 400, not 500"
-
+# A creates a scenario; the same client op id again is the same row
 op="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
-first=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d "{\"title\":\"smoke replay\",\"clientOpId\":\"$op\"}" "$BASE_URL/api/items") || fail "idempotent create failed"
-second=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d "{\"title\":\"smoke replay\",\"clientOpId\":\"$op\"}" "$BASE_URL/api/items") || fail "idempotent replay failed"
-replay_id=$(echo "$first" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-[ "$replay_id" = "$(echo "$second" | sed -E 's/.*"id":"([^"]+)".*/\1/')" ] || fail "a replayed op id must return the first item: $first vs $second"
-curl -fsS -X DELETE -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/items/$replay_id" >/dev/null || fail "cleanup of the replay item failed"
-pass "replaying a client op id returns the same item"
+body="{\"name\":\"smoke scenario $RUN_ID\",\"spec\":$SPEC,\"clientOpId\":\"$op\"}"
+first=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$body" "$BASE_URL/api/scenarios") || fail "create scenario failed"
+second=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$body" "$BASE_URL/api/scenarios") || fail "idempotent replay failed"
+sid=$(echo "$first" | id_of)
+[ -n "$sid" ] && [ "$sid" != "$first" ] || fail "no scenario id in $first"
+[ "$sid" = "$(echo "$second" | id_of)" ] || fail "a replayed client op id must return the first scenario: $first vs $second"
+count=$(curl -fsS -b "$JAR_A" "$BASE_URL/api/scenarios" | grep -o "\"id\":\"$sid\"" | wc -l)
+[ "$count" = "1" ] || fail "replaying a client op id must leave one row, found $count"
+pass "user A created a scenario; a replayed client op id made one row"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -b "$JAR_B" -H "origin: $BASE_URL" "$BASE_URL/api/items/$id")
-[ "$code" = "403" ] || fail "user B deleting A's item should be 403, got $code"
-pass "user B blocked from A's item"
+# B can't see or change it
+[ "$(status -b "$JAR_B" "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "user B reading A's scenario should be 404"
+[ "$(status -X PATCH -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"hijack"}' "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "user B patching A's scenario should be 404"
+[ "$(status -X DELETE -b "$JAR_B" -H "origin: $BASE_URL" "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "user B deleting A's scenario should be 404"
+curl -fsS -b "$JAR_B" "$BASE_URL/api/scenarios" | grep -q "$sid" && fail "A's scenario appeared in B's list"
+pass "user B gets 404 on A's scenario and never sees it listed"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/ai/summarize")
-[ "$code" = "200" ] || fail "AI summary should be 200, got $code"
-pass "AI summary responds"
+# Versioned update
+patched=$(curl -fsS -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"smoke renamed"}' "$BASE_URL/api/scenarios/$sid") || fail "owner PATCH failed"
+echo "$patched" | grep -q '"version":2' || fail "PATCH should bump the version: $patched"
+[ "$(status -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"stale"}' "$BASE_URL/api/scenarios/$sid")" = "409" ] || fail "a stale version should be 409"
+pass "versioned update: current version ok, stale version 409"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/items/$id")
-[ "$code" = "204" ] || fail "owner delete should be 204, got $code"
-pass "owner deleted their item"
+[ "$(status -X DELETE -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/scenarios/$sid")" = "204" ] || fail "owner delete should be 204"
+[ "$(status -b "$JAR_A" "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "a deleted scenario should be 404"
+pass "owner deleted their scenario"
 
 echo "SMOKE PASS"

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, doublePrecision, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 // ---------------------------------------------------------------------------
 // Auth tables (shape required by Better Auth with the admin plugin).
@@ -69,24 +69,164 @@ export const verification = pgTable("verification", {
 });
 
 // ---------------------------------------------------------------------------
-// Example domain table. Each app replaces this with its own entities, keeping
-// the ownerId pattern so per-user access control stays enforceable in SQL.
+// Domain tables (Cloud Cost Scaler). Private tables carry `owner_id` (FK, cascade); public ones are read-only
+// to everyone and written only by the refresh jobs (see src/lib/access.ts for the rule per table).
 // ---------------------------------------------------------------------------
 
-export const item = pgTable(
-  "item",
+const list = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
+
+export const CLOUDS = ["aws", "azure", "gcp", "oci"] as const;
+export const COMPONENTS = ["vm", "serverless", "postgres", "object_storage", "egress", "identity", "load_balancer"] as const;
+export const PRICE_UNITS = ["hour", "vcpu_hour", "gb_hour", "gb_month", "gb", "mau", "million_requests", "vcpu_second", "gib_second"] as const;
+export const PRICE_STATUSES = ["active", "quarantined"] as const;
+export const REFRESH_SOURCES = ["aws_ec2", "aws_other", "azure", "gcp", "oci", "footprint"] as const;
+export const REFRESH_TRIGGERS = ["scheduler", "admin"] as const;
+export const REFRESH_OUTCOMES = ["running", "ok", "partial", "failed"] as const;
+
+/** One normalized list price (public). `usd_micros` is integer micro-dollars per `unit`. */
+export const pricePoint = pgTable(
+  "price_point",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    cloud: text("cloud", { enum: CLOUDS }).notNull(),
+    component: text("component", { enum: COMPONENTS }).notNull(),
+    skuKey: text("sku_key").notNull(),
+    region: text("region").notNull(),
+    unit: text("unit", { enum: PRICE_UNITS }).notNull(),
+    usdMicros: bigint("usd_micros", { mode: "number" }).notNull(),
+    /** Tier floor, 0 for untiered prices (NOT NULL so the unique index below treats "no tier" as one value). */
+    tierStart: doublePrecision("tier_start").notNull().default(0),
+    tierEnd: doublePrecision("tier_end"),
+    vendorSku: text("vendor_sku"),
+    description: text("description").notNull().default(""),
+    sourceUrl: text("source_url").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+    sourceVersion: text("source_version"),
+    status: text("status", { enum: PRICE_STATUSES }).notNull().default("active"),
+  },
+  (t) => [
+    uniqueIndex("price_point_sku_uidx").on(t.cloud, t.skuKey, t.region, t.tierStart),
+    index("price_point_cloud_component_idx").on(t.cloud, t.component),
+    check("price_point_cloud_chk", sql`${t.cloud} in (${list(CLOUDS)})`),
+    check("price_point_component_chk", sql`${t.component} in (${list(COMPONENTS)})`),
+    check("price_point_unit_chk", sql`${t.unit} in (${list(PRICE_UNITS)})`),
+    check("price_point_status_chk", sql`${t.status} in (${list(PRICE_STATUSES)})`),
+    check("price_point_usd_chk", sql`${t.usdMicros} >= 0`),
+    check("price_point_description_chk", sql`char_length(${t.description}) <= 200`),
+  ],
+);
+
+/** One refresh run of one source (admin). Stores codes and counts only: no URLs, keys or response content. */
+export const priceRefresh = pgTable(
+  "price_refresh",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    source: text("source", { enum: REFRESH_SOURCES }).notNull(),
+    trigger: text("trigger", { enum: REFRESH_TRIGGERS }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    outcome: text("outcome", { enum: REFRESH_OUTCOMES }).notNull().default("running"),
+    rowsUpserted: integer("rows_upserted").notNull().default(0),
+    rowsMissing: integer("rows_missing").notNull().default(0),
+    rowsQuarantined: integer("rows_quarantined").notNull().default(0),
+    bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
+    errorCode: text("error_code"),
+    /** Small structured result with no URLs or secrets; the footprint source records its profile-drift check here. */
+    detail: jsonb("detail").$type<Record<string, unknown>>(),
+  },
+  (t) => [
+    index("price_refresh_source_started_idx").on(t.source, t.startedAt),
+    check("price_refresh_source_chk", sql`${t.source} in (${list(REFRESH_SOURCES)})`),
+    check("price_refresh_trigger_chk", sql`${t.trigger} in (${list(REFRESH_TRIGGERS)})`),
+    check("price_refresh_outcome_chk", sql`${t.outcome} in (${list(REFRESH_OUTCOMES)})`),
+  ],
+);
+
+/** The portfolio's current footprint, imported from 30-apps-infra `apps.yaml` (public). Replaced per refresh. */
+export const footprintApp = pgTable("footprint_app", {
+  name: text("name").primaryKey(),
+  title: text("title").notNull(),
+  clouds: text("clouds").array().notNull(),
+  domain: text("domain"),
+  storage: boolean("storage").notNull().default(false),
+  secretCount: integer("secret_count").notNull().default(0),
+  ai: text("ai").notNull(),
+  /** A short content hash of the imported `apps.yaml` (raw.githubusercontent.com does not expose a commit). */
+  sourceCommit: text("source_commit").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A user's saved scenario (private to its owner, admin included). */
+export const scenario = pgTable(
+  "scenario",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     ownerId: text("owner_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
-    title: text("title").notNull(),
-    body: text("body").notNull().default(""),
+    name: text("name").notNull(),
+    baseApp: text("base_app"),
+    spec: jsonb("spec").$type<unknown>().notNull(),
     /** Set by clients that retry (see src/lib/client-op.ts); unique per owner, so a replay returns the first row. */
     clientOpId: uuid("client_op_id"),
+    /** Optimistic concurrency: PATCH carries the version it read; a stale one is a 409. */
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("scenario_owner_id_idx").on(t.ownerId),
+    uniqueIndex("scenario_owner_client_op_uidx").on(t.ownerId, t.clientOpId),
+    // Target of the composite foreign keys below: a child row can only point at a scenario of the same owner.
+    unique("scenario_id_owner_uq").on(t.id, t.ownerId),
+    check("scenario_name_chk", sql`char_length(${t.name}) between 1 and 80`),
+    check("scenario_version_chk", sql`${t.version} >= 1`),
+  ],
+);
+
+/** The latest computed result of a scenario (one row per scenario; compare uses saved results). */
+export const scenarioResult = pgTable(
+  "scenario_result",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    scenarioId: uuid("scenario_id").notNull(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    pricesAsOf: timestamp("prices_as_of", { withTimezone: true }).notNull(),
+    result: jsonb("result").$type<unknown>().notNull(),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("scenario_result_scenario_uidx").on(t.scenarioId),
+    foreignKey({ columns: [t.scenarioId, t.ownerId], foreignColumns: [scenario.id, scenario.ownerId], name: "scenario_result_scenario_owner_fk" }).onDelete("cascade"),
+  ],
+);
+
+/** A saved advisor answer (private to its owner). Rows are written by the advisor (issue 31.4). */
+export const advice = pgTable(
+  "advice",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    question: text("question").notNull(),
+    appName: text("app_name"),
+    scenarioId: uuid("scenario_id"),
+    output: jsonb("output").$type<unknown>().notNull(),
+    trace: jsonb("trace").$type<unknown>().notNull(),
+    checks: jsonb("checks").$type<unknown>().notNull(),
+    provider: text("provider").notNull(),
+    demo: boolean("demo").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("item_owner_id_idx").on(t.ownerId), uniqueIndex("item_owner_client_op_uidx").on(t.ownerId, t.clientOpId)],
+  (t) => [
+    index("advice_owner_created_idx").on(t.ownerId, t.createdAt),
+    // MATCH SIMPLE: with a null scenario_id nothing is checked; otherwise the scenario must belong to the same owner.
+    foreignKey({ columns: [t.scenarioId, t.ownerId], foreignColumns: [scenario.id, scenario.ownerId], name: "advice_scenario_owner_fk" }).onDelete("cascade"),
+    check("advice_question_chk", sql`char_length(${t.question}) <= 500`),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -94,10 +234,8 @@ export const item = pgTable(
 // needs a migration, because the CHECK constraints below are part of the schema.
 // ---------------------------------------------------------------------------
 
-export const RATE_KINDS = ["api_write", "ai", "upload"] as const;
+export const RATE_KINDS = ["scenario_write", "price_run", "advice", "refresh"] as const;
 export const DAILY_USAGE_KINDS = ["ai", "demo_load"] as const;
-
-const list = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
 
 /** App-wide daily counters (one row per UTC day and kind) for free-tier caps. */
 export const dailyUsage = pgTable(
@@ -174,5 +312,7 @@ export const job = pgTable(
 );
 
 export type User = typeof user.$inferSelect;
-export type Item = typeof item.$inferSelect;
+export type Scenario = typeof scenario.$inferSelect;
+export type ScenarioResult = typeof scenarioResult.$inferSelect;
+export type FootprintApp = typeof footprintApp.$inferSelect;
 export type Job = typeof job.$inferSelect;
