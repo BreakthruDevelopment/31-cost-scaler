@@ -6,6 +6,7 @@ import { env } from "@/lib/env";
 import { ConflictError } from "@/lib/errors";
 import { runFootprintRefresh, type TextFetcher } from "@/lib/footprint/refresh";
 import { log } from "@/lib/log";
+import postgres from "postgres";
 import { safeErrorFields } from "@/lib/safe-error";
 import { consumeRate } from "@/lib/usage";
 import { type PriceFetcher, fetchPriceSource } from "./fetch";
@@ -25,6 +26,7 @@ export type RefreshSourceId = (typeof REFRESH_SOURCES)[number];
 export const STALE_AFTER_HOURS = 20;
 export const ADMIN_REFRESH_WINDOW_SECONDS = 600;
 const LOCK_NAME = "price-refresh";
+const STALE_RUNNING_SECONDS = 300;
 
 export type RefreshDeps = {
   fetch?: PriceFetcher;
@@ -59,18 +61,21 @@ export async function runPriceRefresh(
   const deps = opts.deps ?? {};
   const now = deps.now ?? (() => new Date());
 
-  // An admin's button: one press per 10 minutes, counted in the shared rate ledger.
-  if (trigger === "admin" && actor && actor.role === "admin") {
-    const adminId = actor.id;
-    await db().transaction((tx) => consumeRate(tx, adminId, "refresh", 1, "Prices were refreshed a moment ago. Try again in a few minutes.", { windowSeconds: ADMIN_REFRESH_WINDOW_SECONDS }));
-  }
-
-  // The lock lives on this transaction's connection for the whole run; the work itself uses the normal pool.
-  return db().transaction(async (tx) => {
-    const [{ ok }] = await tx.execute<{ ok: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended(${LOCK_NAME}, 0)) as ok`);
+  // The lock is a session lock on its OWN connection (never the app pool, which may be a single connection that the
+  // run itself needs). It dies with the connection, so a crashed process cannot leave it held.
+  const lockClient = postgres(env().DATABASE_URL, { max: 1, idle_timeout: 5, connect_timeout: 10 });
+  try {
+    const [{ ok }] = await lockClient`select pg_try_advisory_lock(hashtextextended(${LOCK_NAME}, 0)) as ok`;
     if (!ok) throw new ConflictError("A price refresh is already running.");
+    // Only now does an admin's press count: a refresh that never started does not spend the 10-minute slot.
+    if (trigger === "admin" && actor && actor.role === "admin") {
+      const adminId = actor.id;
+      await db().transaction((tx) => consumeRate(tx, adminId, "refresh", 1, "Prices were refreshed a moment ago. Try again in a few minutes.", { windowSeconds: ADMIN_REFRESH_WINDOW_SECONDS }));
+    }
+    // A run that was killed mid-flight (request timeout, crash) is over: close it as failed so it rotates to the back.
+    await db().execute(sql`update price_refresh set outcome = 'failed', error_code = 'timeout', finished_at = now() where outcome = 'running' and started_at < now() - make_interval(secs => ${STALE_RUNNING_SECONDS})`);
     const gcpKey = deps.gcpApiKey === undefined ? env().COST_SCALER_GCP_PRICING_API_KEY : (deps.gcpApiKey ?? undefined);
-    await recordGcpUnavailable(gcpKey, now());
+    await recordGcpUnavailable(gcpKey, now(), trigger);
     const source = opts.source ?? (await pickSource(now(), trigger, Boolean(gcpKey)));
     if (!source) return { ran: false, reason: "nothing_stale" } satisfies RefreshReport;
     if (source === "gcp" && !gcpKey) return unavailableReport(await recordUnavailable("gcp", trigger));
@@ -78,8 +83,10 @@ export async function runPriceRefresh(
       const r = await runFootprintRefresh(actor, trigger, deps.footprintFetcher);
       return { ran: true, source, outcome: r.outcome, upserted: r.apps, missing: 0, quarantined: 0, bytes: r.bytes, seconds: 0, errorCode: r.errorCode } satisfies RefreshReport;
     }
-    return runPriceSource(source, trigger, { fetch: deps.fetch ?? fetchPriceSource, gcpApiKey: gcpKey });
-  });
+    return await runPriceSource(source, trigger, { fetch: deps.fetch ?? fetchPriceSource, gcpApiKey: gcpKey });
+  } finally {
+    await lockClient.end({ timeout: 5 }).catch(() => {}); // closing the connection releases the lock
+  }
 }
 
 type Ledger = { source: string; last_ok: Date | string | null; last_try: Date | string | null };
@@ -103,11 +110,11 @@ async function pickSource(now: Date, trigger: "scheduler" | "admin", hasGcpKey: 
 }
 
 /** "Prices unavailable" for Google Cloud while its key is unset: recorded once per stale window, no fetch. */
-async function recordGcpUnavailable(key: string | undefined, now: Date): Promise<void> {
+async function recordGcpUnavailable(key: string | undefined, now: Date, trigger: "scheduler" | "admin"): Promise<void> {
   if (key) return;
   const [last] = await db().select({ at: schema.priceRefresh.startedAt, outcome: schema.priceRefresh.outcome }).from(schema.priceRefresh).where(eq(schema.priceRefresh.source, "gcp")).orderBy(sql`started_at desc`).limit(1);
   if (last && last.outcome === "unavailable" && now.getTime() - last.at.getTime() < STALE_AFTER_HOURS * 3600_000) return;
-  await recordUnavailable("gcp", "scheduler");
+  await recordUnavailable("gcp", trigger);
 }
 
 async function recordUnavailable(source: "gcp", trigger: "scheduler" | "admin") {

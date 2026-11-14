@@ -124,6 +124,19 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
       await upsert.upsertPrices(await db(), [row({ usdMicros: 0 })]);
       expect(await state()).toMatchObject({ usd_micros: "100000", status: "quarantined" });
     });
+    it("a moved tier floor is compared with the stored price: 10x is quarantined, and an accepted move leaves one active row", async () => {
+      const egress = (usdMicros: number, tierStart: number): NormalizedRow => row({ component: "egress", skuKey: "egress.gb", unit: "gb", usdMicros, tierStart, region: "us-east-2" });
+      const rowsOf = () => sql`select tier_start, usd_micros, status from price_point where sku_key = 'egress.gb' order by tier_start`;
+      await upsert.upsertPrices(await db(), [egress(90_000, 1)]);
+      const res = await upsert.upsertPrices(await db(), [egress(900_000, 100)]); // floor 1 -> 100 at 10x
+      expect(res).toMatchObject({ upserted: 0, quarantined: [{ skuKey: "egress.gb", oldMicros: 90_000, newMicros: 900_000, reason: "jump_over_3x" }] });
+      expect(await rowsOf()).toEqual([{ tier_start: 1, usd_micros: "90000", status: "quarantined" }]);
+      // a floor move at a similar price is accepted and retires the old tier row in the same transaction
+      await upsert.upsertPrices(await db(), [egress(95_000, 1)]); // back to normal
+      const moved = await upsert.upsertPrices(await db(), [egress(100_000, 100)]);
+      expect(moved.upserted).toBe(1);
+      expect(await rowsOf()).toEqual([{ tier_start: 100, usd_micros: "100000", status: "active" }]);
+    });
     it("a quarantine in a refresh is counted on the run and listed in its detail for /admin", async () => {
       const { fetcher } = createFixtureFetcher();
       await r.runPriceRefresh(SYSTEM, "scheduler", { source: "aws_ec2", deps: { fetch: fetcher } });
@@ -243,6 +256,56 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
     expect(run.detail.failed).toEqual([{ group: "AmazonRDS", code: "fetch_timeout" }]);
     const down = createFixtureFetcher({ failUrls: () => new PriceFetchError("network") });
     expect(await r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: down.fetcher } })).toMatchObject({ outcome: "failed", errorCode: "fetch_network" });
+  });
+
+  it("works with a pool of one connection: the lock does not take the app's only connection (DB_POOL_MAX=1)", async () => {
+    const { drizzle } = await import("drizzle-orm/postgres-js");
+    const schema = await import("@/lib/db/schema");
+    const g = globalThis as unknown as { sql?: postgres.Sql; db?: unknown };
+    const saved = { sql: g.sql, db: g.db };
+    const tiny = postgres(url!, { max: 1, onnotice: () => {} });
+    g.sql = tiny;
+    g.db = drizzle(tiny, { schema });
+    try {
+      const { fetcher } = createFixtureFetcher();
+      const rep = await Promise.race([
+        r.runPriceRefresh(admin, "admin", { source: "oci", deps: { fetch: fetcher, gcpApiKey: KEY } }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("hung with a pool of one")), 8000)),
+      ]);
+      expect(rep).toMatchObject({ ran: true, outcome: "ok" });
+    } finally {
+      g.sql = saved.sql;
+      g.db = saved.db;
+      await tiny.end({ timeout: 5 });
+    }
+  });
+
+  it("a busy lock does not spend the admin's 10-minute slot", async () => {
+    const holder = postgres(url!, { max: 1, onnotice: () => {} });
+    try {
+      await holder`select pg_advisory_lock(hashtextextended('price-refresh', 0))`;
+      const { fetcher } = createFixtureFetcher();
+      await expect(r.runPriceRefresh(admin, "admin", { source: "oci", deps: { fetch: fetcher, gcpApiKey: KEY } })).rejects.toMatchObject({ status: 409 });
+      expect(await sql`select 1 from rate_event where user_id = ${admin.id}`).toHaveLength(0);
+    } finally {
+      await holder.end();
+    }
+    const { fetcher } = createFixtureFetcher();
+    expect(await r.runPriceRefresh(admin, "admin", { source: "oci", deps: { fetch: fetcher, gcpApiKey: KEY } })).toMatchObject({ ran: true });
+  });
+
+  it("a run left 'running' for more than 300 s is closed as failed before the next pick", async () => {
+    await sql`insert into price_refresh (source, trigger, outcome, started_at) values ('azure', 'scheduler', 'running', now() - interval '10 minutes'), ('oci', 'scheduler', 'running', now() - interval '10 seconds')`;
+    const { fetcher } = createFixtureFetcher();
+    await r.runPriceRefresh(SYSTEM, "scheduler", { source: "aws_ec2", deps: { fetch: fetcher, gcpApiKey: KEY } });
+    const rows = await sql`select source, outcome, error_code from price_refresh where source in ('azure', 'oci') order by source`;
+    expect(rows).toEqual([{ source: "azure", outcome: "failed", error_code: "timeout" }, { source: "oci", outcome: "running", error_code: null }]);
+  });
+
+  it("the Google 'unavailable' row records the real trigger", async () => {
+    const { fetcher } = createFixtureFetcher();
+    await r.runPriceRefresh(admin, "admin", { source: "oci", deps: { fetch: fetcher, gcpApiKey: null } });
+    expect(await sql`select trigger from price_refresh where source = 'gcp'`).toEqual([{ trigger: "admin" }]);
   });
 
   it("only one refresh at a time: a second call while the lock is held is a 409", async () => {

@@ -155,7 +155,7 @@ describe("sku-map", () => {
   // the affected row fails.
   const EXPECTED: Record<string, number | "not_listed"> = {
     "aws vm.2vcpu-8gb": 96_000, "aws vm.4vcpu-16gb": 192_000, "aws vm.vcpu": 48_000, "aws vm.gb": 12_000,
-    "aws serverless.vcpu": 40_480, "aws serverless.gb": 4_445, "aws serverless.requests": "not_listed", "aws serverless.lambda.gb": 60_000, "aws serverless.lambda.requests": 200_000,
+    "aws serverless.vcpu": 40_480, "aws serverless.gb": 4_445, "aws serverless.requests": "not_listed", "aws serverless.lambda.gb": 60_000, "aws serverless.lambda.gb.arm64": 48_000, "aws serverless.lambda.requests": 200_000,
     "aws postgres.2vcpu-8gb": 178_000, "aws postgres.4vcpu-16gb": 356_000, "aws postgres.2vcpu-8gb.ha": 356_000, "aws postgres.4vcpu-16gb.ha": 712_000, "aws postgres.storage": 115_000, "aws postgres.storage.ha": 230_000,
     "aws object_storage.gb": 23_000, "aws egress.gb": 90_000, "aws identity.mau": 5_500,
     "aws load_balancer.hour": 22_500, "aws load_balancer.data": "not_listed", "aws load_balancer.capacity": 8_000,
@@ -268,6 +268,15 @@ describe("normalizer", () => {
     const { rows, notListed } = one([raw({ pico: 0n })]);
     expect(rows.find((r) => r.skuKey === "vm.vcpu")).toBeUndefined();
     expect(notListed.some((n) => n.skuKey === "vm.vcpu")).toBe(true);
+  });
+  it("a derived price needs every input published: a zero vCPU price must not leak into vm.2vcpu-8gb from memory alone", () => {
+    const mem = raw({ attrs: { partNumber: "B93114" }, vendorSku: "B93114", pico: 1_000_000_000n });
+    const { rows, notListed } = one([raw({ pico: 0n }), mem]);
+    expect(rows.find((r) => r.skuKey === "vm.gb")).toBeDefined(); // the memory price is real and published
+    for (const key of ["vm.vcpu", "vm.2vcpu-8gb", "vm.4vcpu-16gb", "serverless.vcpu"]) {
+      expect(rows.find((r) => r.skuKey === key), key).toBeUndefined();
+      expect(notListed.some((n) => n.skuKey === key), key).toBe(true);
+    }
   });
   it("conflicting prices for one rule are ambiguous: no row, not a guess", () => {
     const { rows, notListed } = one([raw({ pico: 25_000_000_000n, vendorSku: "a" }), raw({ pico: 30_000_000_000n, vendorSku: "b" })]);

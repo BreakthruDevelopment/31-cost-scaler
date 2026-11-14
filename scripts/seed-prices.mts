@@ -16,6 +16,18 @@ if (!url) {
   console.error("DATABASE_URL is not set");
   process.exit(1);
 }
+// Synthetic data must never reach a real database: local hosts only, like the demo seed.
+const host = (() => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+})();
+if (process.env.NODE_ENV === "production" || !["localhost", "127.0.0.1", "::1", "[::1]", "postgres", "db"].includes(host)) {
+  console.error("Price seed refused: synthetic fixtures only go into a local database (localhost or 127.0.0.1), never production.");
+  process.exit(1);
+}
 const sql = postgres(url, { max: 1 });
 try {
   const database = drizzle(sql, { schema });

@@ -13,6 +13,8 @@ import type { PriceSourceId, RawPrice } from "./types";
  */
 export const EC2_MAX_BYTES = 2 * 1024 ** 3;
 export const OTHER_MAX_BYTES = 50 * 1024 ** 2;
+/** The RDS price list is the biggest of the "other" files (the parser streams it, so the cap is about memory-free time and disk-free bytes). */
+export const RDS_MAX_BYTES = 500 * 1024 ** 2;
 export const RUN_DEADLINE_MS = 240_000;
 const MAX_PAGES = 40;
 
@@ -61,7 +63,7 @@ async function collectGroup(source: PriceSourceId, group: string, ctx: CollectCo
   switch (source) {
     case "aws_ec2":
     case "aws_other":
-      return awsGroup(group, source === "aws_ec2" ? EC2_MAX_BYTES : OTHER_MAX_BYTES, ctx);
+      return awsGroup(group, source === "aws_ec2" ? EC2_MAX_BYTES : group === "AmazonRDS" ? RDS_MAX_BYTES : OTHER_MAX_BYTES, ctx);
     case "azure":
       return azureGroup(group, ctx);
     case "gcp":
@@ -79,8 +81,11 @@ async function awsGroup(group: string, maxBytes: number, ctx: CollectContext): P
   return { ...parsed, bytes: res.bytes() };
 }
 
+/** Virtual Machines lists thousands of sizes; only the two reference sizes are read (see REFERENCE_SIZES in sku-map). */
+const AZURE_NARROW: Record<string, string> = { "Virtual Machines": " and (armSkuName eq 'Standard_D2s_v5' or armSkuName eq 'Standard_D4s_v5')" };
+
 async function azureGroup(group: string, ctx: CollectContext): Promise<GroupResult> {
-  const filter = `armRegionName eq 'eastus' and priceType eq 'Consumption' and serviceName eq '${group.replace(/'/g, "''")}'`;
+  const filter = `armRegionName eq 'eastus' and priceType eq 'Consumption' and serviceName eq '${group.replace(/'/g, "''")}'${AZURE_NARROW[group] ?? ""}`;
   const first = `https://${PRICE_HOSTS.azure}/api/retail/prices?${new URLSearchParams({ "api-version": "2023-01-01-preview", $filter: filter })}`;
   const rows: RawPrice[] = [];
   let skipped = 0;

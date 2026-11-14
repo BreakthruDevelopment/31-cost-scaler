@@ -1,5 +1,5 @@
 /**
- * Money, exactly. Vendor prices are decimal strings or tiny floats ("0.0000166667" per GB-second); floating point
+ * Money, exactly. Vendor prices are decimal strings or tiny floats ("0.0000166667" per GB-second; JSON numbers are formatted to 13 decimals, never parsed from exponent notation); floating point
  * would drift. A price is held as integer PICO-dollars (1e-12 USD) while it is parsed and scaled, and rounded once,
  * half up, to integer micro-dollars (1e-6 USD) when it is stored.
  */
@@ -7,7 +7,7 @@ export type Pico = bigint;
 
 const SCALE = 12;
 
-/** Parse "0.0000166667", "12", "1.5e-5" (no sign) into pico-dollars. Throws on anything else. */
+/** Parse a plain decimal string ("0.0000166667", "12"; no sign, no exponent) into pico-dollars. Throws on anything else. */
 export function decimalToPico(value: string | number): Pico {
   const text = typeof value === "number" ? numberText(value) : value.trim();
   const m = /^(\d{1,15})(?:\.(\d{1,30}))?$/.exec(text);

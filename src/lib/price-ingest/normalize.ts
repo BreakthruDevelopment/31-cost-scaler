@@ -53,13 +53,13 @@ export function normalize(input: NormalizeInput): NormalizeResult {
       notListed.push({ cloud: rule.cloud, component: rule.component, skuKey: rule.key, reason: cell.reason });
       continue;
     }
-    cells.set(rule.key, cell.cell);
     const usdMicros = picoToMicros(cell.cell.pico);
     if (usdMicros < 1) {
       // A price that rounds to zero is not a price.
       notListed.push({ cloud: rule.cloud, component: rule.component, skuKey: rule.key, reason: "price rounds to zero micro-dollars" });
       continue;
     }
+    cells.set(rule.key, cell.cell); // only a published price can feed a derived one
     out.push({
       cloud: rule.cloud,
       component: rule.component,

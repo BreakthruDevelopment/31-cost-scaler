@@ -19,7 +19,7 @@ export type QuarantineNote = { cloud: string; skuKey: string; oldMicros: number 
 export type UpsertResult = { upserted: number; quarantined: QuarantineNote[] };
 
 type Handle = Pick<Db, "transaction">;
-const keyOf = (r: { cloud: string; skuKey: string; region: string; tierStart: number }) => `${r.cloud}|${r.skuKey}|${r.region}|${r.tierStart}`;
+const skuOf = (r: { cloud: string; skuKey: string; region: string }) => `${r.cloud}|${r.skuKey}|${r.region}`;
 
 export const jumped = (oldMicros: number, newMicros: number) => newMicros > oldMicros * JUMP_FACTOR || newMicros * JUMP_FACTOR < oldMicros;
 
@@ -28,20 +28,27 @@ export async function upsertPrices(database: Handle, rows: readonly NormalizedRo
   return database.transaction(async (tx) => {
     const clouds = [...new Set(rows.map((r) => r.cloud))];
     const existing = clouds.length ? await tx.select().from(pricePoint).where(inArray(pricePoint.cloud, clouds)) : [];
-    const byKey = new Map(existing.map((e) => [keyOf(e), e]));
+    // The previous price is looked up per (cloud, sku_key, region), NOT per tier: a changed tier floor must still be
+    // compared with what was stored (lowest tier first), or it would dodge the 3x rule and leave two rows for one key.
+    const bySku = new Map<string, typeof existing>();
+    for (const e of existing) bySku.set(skuOf(e), [...(bySku.get(skuOf(e)) ?? []), e].sort((a, b) => a.tierStart - b.tierStart));
 
     const toWrite: NormalizedRow[] = [];
     const toQuarantine: string[] = [];
+    const toRetire: string[] = [];
     const notes: QuarantineNote[] = [];
     for (const row of rows) {
-      const old = byKey.get(keyOf(row));
+      const rowsOfSku = bySku.get(skuOf(row)) ?? [];
+      const old = rowsOfSku.find((e) => e.tierStart === row.tierStart) ?? rowsOfSku[0];
       const bad = !inBounds(row.unit, row.usdMicros) ? "out_of_bounds" : old && jumped(old.usdMicros, row.usdMicros) ? "jump_over_3x" : null;
       if (!bad) {
         toWrite.push(row);
+        // The tier floor moved and the new price is accepted: the other tier rows of this key are retired with it.
+        toRetire.push(...rowsOfSku.filter((e) => e.tierStart !== row.tierStart).map((e) => e.id));
         continue;
       }
       notes.push({ cloud: row.cloud, skuKey: row.skuKey, oldMicros: old?.usdMicros ?? null, newMicros: row.usdMicros, reason: bad });
-      if (old) toQuarantine.push(old.id);
+      toQuarantine.push(...rowsOfSku.map((e) => e.id));
     }
 
     for (let i = 0; i < toWrite.length; i += 200) {
@@ -82,6 +89,7 @@ export async function upsertPrices(database: Handle, rows: readonly NormalizedRo
           },
         });
     }
+    if (toRetire.length) await tx.delete(pricePoint).where(inArray(pricePoint.id, toRetire));
     // Old value kept: only the status changes.
     if (toQuarantine.length) await tx.update(pricePoint).set({ status: "quarantined" }).where(and(inArray(pricePoint.id, toQuarantine), eq(pricePoint.status, "active")));
     return { upserted: toWrite.length, quarantined: notes };
