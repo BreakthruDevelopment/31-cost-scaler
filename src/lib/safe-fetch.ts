@@ -1,0 +1,339 @@
+import dns from "node:dns";
+import http from "node:http";
+import https from "node:https";
+import { isIP, type LookupFunction, type Socket } from "node:net";
+import { Readable } from "node:stream";
+import zlib from "node:zlib";
+import { isPublicIp } from "@/lib/ip-guard";
+
+/**
+ * SSRF-safe GET for user-supplied URLs.
+ *
+ * Checking a hostname and then fetching it is not safe: DNS can answer differently the second time (rebinding).
+ * Every address is resolved once, all of them must be public, and the socket's `lookup` returns only that validated
+ * list (so connection fallback to a second address still works) — it does not resolve again. TLS SNI and the Host header still use the hostname. Also:
+ * - http(s) only, ports 80/443 only (override with `allowedPorts`), no credentials in the URL;
+ * - blocked names (`localhost`, `*.local`, `*.internal`, `*.azurecontainerapps.io`) and non-public IP literals
+ *   are refused before any DNS or connection;
+ * - redirects are followed by hand (max `maxRedirects`), and every hop is checked from scratch;
+ * - the body is capped at `maxBytes` after gzip/deflate/brotli decompression, and the compressed bytes on the wire
+ *   are capped at `maxBytes` too;
+ * - a non-2xx status is judged before the content type, so a 429 or 5xx page of any type stays retryable;
+ * - every failure (timeout, abort, size cap, decompression error) destroys the response, the decoder and the request;
+ * - one deadline, `timeoutMs`, covers DNS, every hop and the whole body. Optional `connectTimeoutMs` and
+ *   `headersTimeoutMs` are tighter caps on those phases.
+ * No cookies, authorization or proxy are ever used. Errors carry a fixed message and a `code` only, never the URL
+ * or any response content.
+ */
+export type SafeFetchCode =
+  | "bad_url"
+  | "blocked"
+  | "too_large"
+  | "timeout"
+  | "too_many_redirects"
+  | "network"
+  | "dns"
+  | "bad_content_type";
+
+export class SafeFetchError extends Error {
+  constructor(readonly code: SafeFetchCode) {
+    super(`safeFetch failed: ${code}`);
+    this.name = "SafeFetchError";
+  }
+}
+
+export type SafeFetchOptions = {
+  maxBytes?: number;
+  timeoutMs?: number;
+  /** Aborts the socket connect. Falls inside `timeoutMs`. */
+  connectTimeoutMs?: number;
+  /** Aborts while waiting for response headers, measured from connect. Falls inside `timeoutMs`. */
+  headersTimeoutMs?: number;
+  maxRedirects?: number;
+  allowedPorts?: number[];
+  headers?: Record<string, string>;
+  /** When set, a final response whose media type is not listed fails before the body is read. */
+  allowedContentTypes?: string[];
+  signal?: AbortSignal;
+};
+
+export type SafeFetchResult = { status: number; url: string; headers: Record<string, string>; body: Buffer };
+
+type Resolve = (hostname: string) => Promise<{ address: string; family: number }[]>;
+export type Deps = { resolve?: Resolve; isPublic?: (address: string) => boolean };
+type Pin = { address: string; family: 4 | 6 };
+type Pins = Pin[];
+
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const BLOCKED_EXACT = new Set(["localhost", "local", "internal", "azurecontainerapps.io"]);
+const BLOCKED_SUFFIXES = [".localhost", ".local", ".internal", ".azurecontainerapps.io"];
+
+/** Build a fetcher. Tests inject `resolve`/`isPublic`; production code uses the exported `safeFetch`. */
+export function createSafeFetch(deps: Deps = {}) {
+  const isPublic = deps.isPublic ?? isPublicIp;
+  const resolve: Resolve = deps.resolve ?? ((host) => dns.promises.lookup(host, { all: true, verbatim: true }));
+
+  async function pinHost(host: string, deadline: number, signal: AbortSignal | undefined): Promise<Pins> {
+    let addresses: { address: string; family: number }[];
+    try {
+      // A resolver that never answers must not outlive the deadline or the abort signal.
+      addresses = await within(resolve(host), deadline, signal);
+    } catch (err) {
+      if (err instanceof SafeFetchError) throw err;
+      throw new SafeFetchError("dns");
+    }
+    if (addresses.length === 0 || !addresses.every((item) => isPublic(item.address))) {
+      throw new SafeFetchError("blocked");
+    }
+    // Keep the whole validated list from this one resolution: Node's connection fallback (an unreachable first
+    // address, such as IPv6 on a host without a route) picks from it, and nothing is ever resolved again.
+    return addresses.map((item) => ({
+      address: item.address,
+      family: item.family === 6 ? 6 : item.family === 4 ? 4 : item.address.includes(":") ? 6 : 4,
+    }));
+  }
+
+  function hop(
+    url: URL,
+    headers: Record<string, string>,
+    maxBytes: number,
+    deadline: number,
+    pin: Pins | null,
+    allowedContentTypes: string[] | undefined,
+    connectTimeoutMs: number | undefined,
+    headersTimeoutMs: number | undefined,
+    signal: AbortSignal | undefined,
+  ) {
+    return new Promise<{ status: number; headers: Record<string, string>; body: Buffer }>((resolveHop, reject) => {
+      const lib = url.protocol === "https:" ? https : http;
+      let finished = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (fn: () => void) => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        fn();
+      };
+      let response: http.IncomingMessage | undefined;
+      let decoder: Readable | undefined;
+      // Close everything this hop opened. Every failure path goes through here, so a stalled or hostile server
+      // cannot keep a socket (or a half-open decompressor) alive after we gave up.
+      const teardown = () => {
+        for (const stream of [decoder, response]) {
+          if (!stream) continue;
+          stream.on("error", () => {});
+          stream.destroy();
+        }
+        req.destroy();
+      };
+      const fail = (err: SafeFetchError) =>
+        done(() => {
+          teardown();
+          reject(err);
+        });
+      const arm = (ms: number) => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => fail(new SafeFetchError("timeout")), Math.max(1, ms));
+        timer.unref?.();
+      };
+      const onAbort = () => fail(new SafeFetchError("timeout"));
+
+      const lookup: LookupFunction = (_hostname, options, callback) => {
+        if (!pin) {
+          callback(new SafeFetchError("blocked") as unknown as NodeJS.ErrnoException, "", 0);
+          return;
+        }
+        if (typeof options === "object" && options.all) {
+          (callback as unknown as (err: null, addresses: Pins) => void)(null, pin);
+          return;
+        }
+        callback(null, pin[0].address, pin[0].family);
+      };
+
+      if (signal?.aborted) {
+        reject(new SafeFetchError("timeout"));
+        return;
+      }
+
+      const req = lib.request(
+        url,
+        {
+          method: "GET",
+          headers: { "user-agent": "30-apps-safe-fetch", accept: "*/*", ...headers },
+          ...(pin ? { lookup } : {}),
+          agent: false,
+        },
+        (res) => {
+          response = res;
+          arm(Math.max(1, deadline - Date.now()));
+          const status = res.statusCode ?? 0;
+          const out: Record<string, string> = {};
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (value !== undefined) out[key] = Array.isArray(value) ? value.join(", ") : value;
+          }
+          if (REDIRECTS.has(status)) {
+            return done(() => {
+              teardown();
+              resolveHop({ status, headers: out, body: Buffer.alloc(0) });
+            });
+          }
+          if (allowedContentTypes && !allowedContentTypes.includes(mediaType(out["content-type"]))) {
+            // Judge the status first. Only a successful response of the wrong type is a permanent mistake; a 429,
+            // a 5xx or a 4xx error page (often text/plain or JSON) is reported by status so the caller can retry.
+            if (status >= 200 && status < 300) return fail(new SafeFetchError("bad_content_type"));
+            return done(() => {
+              teardown();
+              resolveHop({ status, headers: out, body: Buffer.alloc(0) });
+            });
+          }
+          const encoding = (out["content-encoding"] ?? "").trim().toLowerCase();
+          const declared = Number(out["content-length"]);
+          // Content-Length is the compressed size when an encoding is used, so it is checked against the raw cap.
+          if (Number.isFinite(declared) && declared > maxBytes) return fail(new SafeFetchError("too_large"));
+          const decoded = decodedBody(res, encoding);
+          decoder = decoded;
+          const chunks: Buffer[] = [];
+          let total = 0;
+          // Attach the error handler before reading. Destroying an over-cap stream emits `error` synchronously,
+          // and that must not replace the too_large result or escape as an unhandled rejection.
+          const onStreamError = () => fail(new SafeFetchError("network"));
+          decoded.on("error", onStreamError);
+          if (decoded !== res) res.on("error", onStreamError);
+          res.on("aborted", onStreamError);
+          if (decoded !== res) {
+            let raw = 0;
+            res.on("data", (chunk: Buffer) => {
+              raw += chunk.length;
+              if (raw > maxBytes) fail(new SafeFetchError("too_large"));
+            });
+          }
+          decoded.on("data", (chunk: Buffer) => {
+            total += chunk.length;
+            if (total > maxBytes) {
+              fail(new SafeFetchError("too_large"));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          decoded.on("end", () => done(() => resolveHop({ status, headers: out, body: Buffer.concat(chunks) })));
+        },
+      );
+
+      const remaining = Math.max(1, deadline - Date.now());
+      arm(connectTimeoutMs !== undefined ? Math.min(connectTimeoutMs, remaining) : remaining);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      req.on("socket", (socket: Socket) => {
+        if (connectTimeoutMs === undefined && headersTimeoutMs === undefined) return;
+        const onConnect = () => {
+          const left = Math.max(1, deadline - Date.now());
+          arm(headersTimeoutMs !== undefined ? Math.min(headersTimeoutMs, left) : left);
+        };
+        if (socket.connecting) socket.once("connect", onConnect);
+        else onConnect();
+      });
+      req.on("error", (err) => fail(err instanceof SafeFetchError ? err : new SafeFetchError("network")));
+      req.end();
+    });
+  }
+
+  return async function safeFetch(input: string, opts: SafeFetchOptions = {}): Promise<SafeFetchResult> {
+    const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
+    const maxRedirects = opts.maxRedirects ?? 3;
+    const ports = opts.allowedPorts ?? [80, 443];
+    const deadline = Date.now() + (opts.timeoutMs ?? 10_000);
+    if (opts.signal?.aborted) throw new SafeFetchError("timeout");
+
+    let headers = opts.headers ?? {};
+    let url = parse(input);
+    for (let redirects = 0; ; redirects++) {
+      if (opts.signal?.aborted) throw new SafeFetchError("timeout");
+      const host = bareHost(url);
+      vet(url, host, ports, isPublic);
+      const pin = isIP(host) ? null : await pinHost(host, deadline, opts.signal);
+      const res = await hop(
+        url,
+        headers,
+        maxBytes,
+        deadline,
+        pin,
+        opts.allowedContentTypes,
+        opts.connectTimeoutMs,
+        opts.headersTimeoutMs,
+        opts.signal,
+      );
+      const location = res.headers.location;
+      if (!REDIRECTS.has(res.status) || !location) return { ...res, url: url.toString() };
+      if (redirects >= maxRedirects) throw new SafeFetchError("too_many_redirects");
+      const next = parse(location, url);
+      // Caller headers (tokens, cookies, API keys) were meant for the first host: never forward them to another origin.
+      if (next.origin !== url.origin) headers = {};
+      url = next;
+    }
+  };
+}
+
+/** Reject with `timeout` when the deadline passes or the signal aborts first. The losing promise is left to settle quietly. */
+function within<T>(work: Promise<T>, deadline: number, signal: AbortSignal | undefined): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => onAbort(), Math.max(1, deadline - Date.now()));
+    timer.unref?.();
+    const finish = (fn: () => void) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => finish(() => reject(new SafeFetchError("timeout")));
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => finish(() => resolve(value)),
+      (err: unknown) => finish(() => reject(err)),
+    );
+  });
+}
+
+function parse(input: string, base?: URL): URL {
+  try {
+    return new URL(input, base);
+  } catch {
+    throw new SafeFetchError("bad_url");
+  }
+}
+
+function bareHost(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
+}
+
+function isBlockedName(host: string): boolean {
+  if (BLOCKED_EXACT.has(host)) return true;
+  return BLOCKED_SUFFIXES.some((suffix) => host.endsWith(suffix));
+}
+
+function vet(url: URL, host: string, ports: number[], isPublic: (address: string) => boolean): void {
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new SafeFetchError("bad_url");
+  if (url.username || url.password) throw new SafeFetchError("bad_url");
+  if (!host) throw new SafeFetchError("bad_url");
+  if (host.length > 253) throw new SafeFetchError("bad_url");
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+  if (!ports.includes(port)) throw new SafeFetchError("blocked");
+  if (isBlockedName(host)) throw new SafeFetchError("blocked");
+  // IP literals skip DNS, so vet them here. WHATWG URL already turns 2130706433 or 0x7f.1 into 127.0.0.1.
+  if (isIP(host) && !isPublic(host)) throw new SafeFetchError("blocked");
+}
+
+function mediaType(header: string | undefined): string {
+  if (!header) return "";
+  return header.split(";", 1)[0]?.split(",", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+/** Inflate a single known encoding. Anything else is read raw and still capped, so an unknown encoding cannot expand. */
+function decodedBody(res: http.IncomingMessage, encoding: string): Readable {
+  if (encoding === "" || encoding === "identity" || encoding.includes(",")) return res;
+  if (encoding === "gzip" || encoding === "x-gzip") return res.pipe(zlib.createGunzip());
+  if (encoding === "deflate") return res.pipe(zlib.createInflate());
+  if (encoding === "br") return res.pipe(zlib.createBrotliDecompress());
+  return res;
+}
+
+export const safeFetch = createSafeFetch();
