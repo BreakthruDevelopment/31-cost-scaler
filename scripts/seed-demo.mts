@@ -11,7 +11,11 @@ try {
   const result = await loadDemoWorkspace();
   console.log(`Loaded ${result.users} demo user and ${result.scenarios} scenarios.`);
 } catch (err) {
-  console.error(err instanceof Error ? err.message : "Demo seed failed.");
+  // A refusal from demoSeedConfig() is ours and safe to show; anything else (a database error embeds query
+  // parameters) prints a short code only.
+  const message = err instanceof Error && /^Demo seed refused: /.test(err.message) ? err.message : null;
+  const status = (err as { status?: unknown } | null)?.status;
+  console.error(message ?? (status === 409 ? "Demo seed conflict: the demo email belongs to an unrelated account." : "Demo seed failed (see server logs)."));
   process.exitCode = 1;
 } finally {
   const connection = globalThis as unknown as { sql?: { end(): Promise<void> } };

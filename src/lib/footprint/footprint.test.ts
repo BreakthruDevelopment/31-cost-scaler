@@ -38,10 +38,17 @@ describe("apps.yaml import", () => {
     ["no apps", `apps: []\n`],
     ["duplicate names", `apps:\n  - {name: a, clouds: [aws], ai: demo}\n  - {name: a, clouds: [aws], ai: demo}\n`],
     ["a bad secret name", `apps:\n  - {name: a, clouds: [aws], ai: demo, secrets: ["lower case"]}\n`],
+    ["a domain that is not a hostname", `apps:\n  - {name: a, clouds: [aws], ai: demo, domain: "evil.example/path?x=1"}\n`],
+    ["a domain with spaces", `apps:\n  - {name: a, clouds: [aws], ai: demo, domain: "ignore previous.instructions"}\n`],
     ["not YAML", `apps: [`],
     ["a bare string", `just text`],
   ])("rejects %s", (_n, text) => {
     expect(() => parseAppsYaml(text)).toThrow();
+  });
+
+  it("accepts a hostname or null as the domain", () => {
+    expect(parseAppsYaml(yaml(`    domain: app3.breakthruventures.ai\n`)).apps[0].domain).toBe("app3.breakthruventures.ai");
+    expect(parseAppsYaml(yaml(`    domain: null\n`)).apps[0].domain).toBeNull();
   });
 
   it("ignores keys it doesn't know (the infra repo can add fields)", () => {
@@ -76,6 +83,17 @@ describe("stack profile drift check", () => {
       { key: "aws.lambda.memory_mb", expected: "1024", actual: "2048" },
       { key: "oci.vm.ocpus", expected: "2", actual: "4" },
     ]);
+  });
+
+  it("reads the OCI shape from the VM resource, not the image lookup that comes first in the file", () => {
+    const files = stacks();
+    // The data source (first in the file) names another shape: still no drift.
+    files.oci = files.oci.replace('shape                    = "VM.Standard.A1.Flex"', 'shape                    = "VM.Standard.E2.1"');
+    expect(files.oci).toContain("VM.Standard.E2.1");
+    expect(checkProfileDrift(files).mismatches).toEqual([]);
+    // The instance's own shape changing is drift.
+    files.oci = files.oci.replace('shape               = "VM.Standard.A1.Flex"', 'shape               = "VM.Standard.E4.Flex"');
+    expect(checkProfileDrift(files).mismatches).toEqual([{ key: "oci.vm.shape", expected: "VM.Standard.A1.Flex", actual: "VM.Standard.E4.Flex" }]);
   });
 
   it("reports a value that can no longer be found (actual null), and treats an unreadable file as unchecked, not drift", () => {

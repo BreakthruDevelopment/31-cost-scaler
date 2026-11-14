@@ -8,7 +8,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "@/lib/errors";
 import { ownedBy } from "@/lib/owned";
 import { scenarioSpec } from "@/lib/pricing/spec";
 import { jsonHasNul, text } from "@/lib/text";
-import { consumeRate, releaseRate } from "@/lib/usage";
+import { advisoryLock, consumeRate } from "@/lib/usage";
 
 /**
  * Scenarios and their saved results. Every function takes the acting user and calls `assertCan()` first; every
@@ -74,30 +74,24 @@ export async function createScenario(actor: Actor, input: unknown): Promise<{ sc
   assertNoNul(data.spec);
   const { scenario } = schema;
 
-  const replay = async () => {
-    if (!data.clientOpId) return undefined;
-    const [existing] = await db().select().from(scenario).where(ownedBy(scenario, actor, eq(scenario.clientOpId, data.clientOpId)));
-    return existing;
-  };
-  const before = await replay();
-  if (before) return { scenario: before, created: false };
-
   return db().transaction(async (tx) => {
-    // consumeRate takes this user's advisory lock for the rest of the transaction, so the count below can't race
-    // another create by the same user. A throw rolls the whole transaction back, including the rate row.
+    // Same lock key consumeRate uses, taken FIRST: this user's creates run one at a time, so the op-id lookup, the
+    // write charge and the cap count below can't interleave with a duplicate. A replay of an op id that already
+    // saved returns that row even when the user is now at the cap or the write limit, and is never charged.
+    await advisoryLock(tx, `rate:scenario_write:${actor.id}`);
+    if (data.clientOpId) {
+      const [existing] = await tx.select().from(scenario).where(ownedBy(scenario, actor, eq(scenario.clientOpId, data.clientOpId)));
+      if (existing) return { scenario: existing, created: false };
+    }
+    // A throw from here on rolls the whole transaction back, including the rate row.
     await consumeRate(tx, actor.id, "scenario_write", SCENARIO_WRITES_PER_HOUR, "Too many scenario changes this hour. Try again later.");
     const [{ n }] = await tx.select({ n: count() }).from(scenario).where(ownedBy(scenario, actor));
     if (n >= MAX_SCENARIOS_PER_USER) throw new ConflictError(`You can keep up to ${MAX_SCENARIOS_PER_USER} scenarios. Delete one first.`);
     const [row] = await tx
       .insert(scenario)
       .values({ ownerId: actor.id, name: data.name, baseApp: data.spec.baseApp ?? null, spec: data.spec, clientOpId: data.clientOpId ?? null })
-      .onConflictDoNothing({ target: [scenario.ownerId, scenario.clientOpId] })
       .returning();
-    if (row) return { scenario: row, created: true };
-    // Lost a race with the same op id from this user: hand back the winner and refund the write.
-    await releaseRate(tx, actor.id, "scenario_write");
-    const [winner] = await tx.select().from(scenario).where(ownedBy(scenario, actor, eq(scenario.clientOpId, data.clientOpId!)));
-    return { scenario: winner, created: false };
+    return { scenario: row, created: true };
   });
 }
 
@@ -162,19 +156,24 @@ export async function saveScenarioResult(actor: Actor, id: string, input: { pric
   assertNoNul(input.result);
   const bytes = Buffer.byteLength(JSON.stringify(input.result ?? null));
   if (bytes > MAX_RESULT_BYTES) throw new BadRequestError("Result too large");
-  const owned = await findOwnedOrNull(actor, sid);
-  assertCan(actor, "write", "scenario_result", owned);
-  const [row] = await db()
-    .insert(scenarioResult)
-    .values({ scenarioId: sid, ownerId: actor.id, pricesAsOf: when, result: input.result ?? null })
-    .onConflictDoUpdate({
-      target: scenarioResult.scenarioId,
-      set: { pricesAsOf: when, result: input.result ?? null, computedAt: sql`now()` },
-      // The conflicting row can only be this owner's: the composite FK ties scenario_id to owner_id.
-      setWhere: eq(scenarioResult.ownerId, actor.id),
-    })
-    .returning();
-  return row;
+  // Ownership check and write in one transaction, with the scenario row locked: a concurrent delete waits and then
+  // finds nothing to attach to (404), instead of hitting the foreign key (500).
+  return db().transaction(async (tx) => {
+    const { scenario } = schema;
+    const [owned] = await tx.select({ ownerId: scenario.ownerId }).from(scenario).where(ownedBy(scenario, actor, eq(scenario.id, sid))).for("update");
+    if (!owned) throw new NotFoundError();
+    assertCan(actor, "write", "scenario_result", owned);
+    const [row] = await tx
+      .insert(scenarioResult)
+      .values({ scenarioId: sid, ownerId: actor.id, pricesAsOf: when, result: input.result ?? null })
+      .onConflictDoUpdate({
+        target: scenarioResult.scenarioId,
+        set: { pricesAsOf: when, result: input.result ?? null, computedAt: sql`now()` },
+        setWhere: eq(scenarioResult.ownerId, actor.id),
+      })
+      .returning();
+    return row;
+  });
 }
 
 /** The latest saved result of one of the actor's scenarios, or null when none was saved. Another user's scenario: 404. */

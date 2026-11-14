@@ -163,6 +163,51 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
     expect((await s.createScenario(owner, input("fits now"))).created).toBe(true);
   });
 
+  it("parallel duplicates of a saved op id succeed with one row and one write charged, even at 49 scenarios", async () => {
+    const owner = { id: "sc-edge49", role: "user" as const };
+    await sql`insert into "user" (id, name, email) values (${owner.id}, 'e', 'sc-edge49@test.local')`;
+    for (let i = 0; i < 48; i++) await sql`insert into scenario (owner_id, name, spec) values (${owner.id}, ${"n" + i}, '{}'::jsonb)`;
+    const clientOpId = crypto.randomUUID();
+    const results = await Promise.all([1, 2, 3].map(() => s.createScenario(owner, input("edge", { clientOpId }))));
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(new Set(results.map((r) => r.scenario.id)).size).toBe(1);
+    expect((await sql`select count(*)::int as n from scenario where owner_id = ${owner.id}`)[0].n).toBe(49);
+    expect((await sql`select count(*)::int as n from rate_event where user_id = ${owner.id}`)[0].n).toBe(1);
+    // Now at 49 the last slot is still free, and a replay after that is still a replay at the cap.
+    await s.createScenario(owner, input("fiftieth"));
+    expect((await s.createScenario(owner, input("edge", { clientOpId }))).created).toBe(false);
+    await expect(s.createScenario(owner, input("fifty-first"))).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("parallel duplicates of a saved op id succeed with one row and one write charged, even at 59 writes", async () => {
+    const owner = { id: "sc-edge59", role: "user" as const };
+    await sql`insert into "user" (id, name, email) values (${owner.id}, 'e', 'sc-edge59@test.local')`;
+    await sql`insert into rate_event (user_id, kind) select ${owner.id}, 'scenario_write' from generate_series(1, 58)`;
+    const clientOpId = crypto.randomUUID();
+    const results = await Promise.all([1, 2, 3].map(() => s.createScenario(owner, input("edge", { clientOpId }))));
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(new Set(results.map((r) => r.scenario.id)).size).toBe(1);
+    expect((await sql`select count(*)::int as n from scenario where owner_id = ${owner.id}`)[0].n).toBe(1);
+    expect((await sql`select count(*)::int as n from rate_event where user_id = ${owner.id}`)[0].n).toBe(59);
+    // At the limit a different new create is refused, the replay still answers.
+    await s.createScenario(owner, input("sixtieth"));
+    await expect(s.createScenario(owner, input("sixty-first"))).rejects.toMatchObject({ status: 429 });
+    expect((await s.createScenario(owner, input("edge", { clientOpId }))).created).toBe(false);
+  });
+
+  it("saving a result while the scenario is being deleted is a 404, never a database error", async () => {
+    for (let i = 0; i < 5; i++) {
+      const { scenario } = await s.createScenario(alice, input("race delete"));
+      const settled = await Promise.allSettled([
+        s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { n: i } }),
+        s.deleteScenario(alice, scenario.id),
+      ]);
+      const failure = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+      if (failure) expect(failure.reason).toMatchObject({ status: 404 });
+      expect((await sql`select count(*)::int as n from scenario_result where scenario_id = ${scenario.id}`)[0].n).toBe(0);
+    }
+  });
+
   it("60 writes per user per hour (429): creates, updates and deletes all count; replays don't", async () => {
     const owner = { id: "sc-rate", role: "user" as const };
     await sql`insert into "user" (id, name, email) values (${owner.id}, 'rate', 'sc-rate@test.local')`;

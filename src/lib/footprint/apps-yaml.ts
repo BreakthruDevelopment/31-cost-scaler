@@ -19,7 +19,11 @@ const appEntry = z.looseObject({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
   title: title.optional(),
   clouds: z.array(z.enum(CLOUDS)).min(1).max(CLOUDS.length),
-  domain: z.string().max(253).nullable().optional(),
+  domain: z
+    .string()
+    .regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i, "Must be a hostname")
+    .nullable()
+    .optional(),
   ai: z.enum(["demo", "gemini"]),
   storage: z.boolean().optional(),
   secrets: z

@@ -58,6 +58,17 @@ describe.skipIf(!url)("public data and admin stats (Postgres)", () => {
     await expect(adminStats(alice)).rejects.toMatchObject({ status: 403 });
   });
 
+  it("a source with an old run still shows even when 100 newer runs of other sources exist", async () => {
+    const { adminStats } = await import("@/lib/admin-stats");
+    await sql`delete from price_refresh where source in ('gcp', 'azure')`;
+    await sql`insert into price_refresh (source, trigger, outcome, started_at) values ('gcp', 'scheduler', 'ok', now() - interval '30 days')`;
+    await sql`insert into price_refresh (source, trigger, outcome, started_at) select 'azure', 'scheduler', 'ok', now() - make_interval(mins => g) from generate_series(1, 100) g`;
+    const sources = (await adminStats(admin)).refresh.map((x) => x.source);
+    expect(sources).toContain("gcp");
+    expect(sources.filter((x) => x === "azure")).toHaveLength(1);
+    await sql`delete from price_refresh where source in ('gcp', 'azure')`;
+  });
+
   it("admin stats include the latest refresh per source, status only", async () => {
     const { adminStats } = await import("@/lib/admin-stats");
     await sql`delete from price_refresh where source = 'oci'`;

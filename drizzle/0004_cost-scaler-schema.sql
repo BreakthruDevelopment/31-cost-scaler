@@ -106,4 +106,6 @@ CREATE INDEX "price_refresh_source_started_idx" ON "price_refresh" USING btree (
 CREATE INDEX "scenario_owner_id_idx" ON "scenario" USING btree ("owner_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "scenario_owner_client_op_uidx" ON "scenario" USING btree ("owner_id","client_op_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "scenario_result_scenario_uidx" ON "scenario_result" USING btree ("scenario_id");--> statement-breakpoint
+-- Rows from the template's old kinds can't satisfy the new check; they are only a sliding-window counter.
+DELETE FROM "rate_event" WHERE "kind" NOT IN ('scenario_write', 'price_run', 'advice', 'refresh');--> statement-breakpoint
 ALTER TABLE "rate_event" ADD CONSTRAINT "rate_event_kind_chk" CHECK ("rate_event"."kind" in ('scenario_write', 'price_run', 'advice', 'refresh'));

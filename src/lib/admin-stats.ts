@@ -28,7 +28,7 @@ export async function adminStats(actor: Actor) {
   // The latest run per source: status only.
   const { priceRefresh } = schema;
   const latest = await db()
-    .select({
+    .selectDistinctOn([priceRefresh.source], {
       source: priceRefresh.source,
       outcome: priceRefresh.outcome,
       startedAt: priceRefresh.startedAt,
@@ -40,10 +40,7 @@ export async function adminStats(actor: Actor) {
       driftCount: sql<number | null>`jsonb_array_length(${priceRefresh.detail} -> 'drift' -> 'mismatches')`,
     })
     .from(priceRefresh)
-    .orderBy(desc(priceRefresh.startedAt))
-    .limit(60);
-  const bySource = new Map<string, (typeof latest)[number]>();
-  for (const r of latest) if (!bySource.has(r.source)) bySource.set(r.source, r);
+    .orderBy(priceRefresh.source, desc(priceRefresh.startedAt));
 
   return {
     users: users.n,
@@ -53,6 +50,6 @@ export async function adminStats(actor: Actor) {
     advisor: { today: advisorToday, dailyCap: AI_DAILY_CAP },
     footprintApps: footprint.n,
     prices: { active: prices.n, quarantined: quarantined.n },
-    refresh: [...bySource.values()],
+    refresh: latest,
   };
 }

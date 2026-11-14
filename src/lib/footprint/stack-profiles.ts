@@ -76,7 +76,7 @@ export const STACK_PROFILES: Record<CloudId, StackProfile> = {
     app: { runtime: "Shared A1 VM (Docker)", vcpu: null, memoryGb: 0 },
     shared: { label: "Shared A1 VM (apps and Postgres)", vcpu: 2, memoryGb: 12, storageGb: 100, instance: "VM.Standard.A1.Flex" },
     checks: [
-      { key: "oci.vm.shape", label: "VM shape", expected: "VM.Standard.A1.Flex", pattern: /^\s*shape\s*=\s*"([A-Za-z0-9.]+)"/m, source: link("oci", 176) },
+      { key: "oci.vm.shape", label: "VM shape", expected: "VM.Standard.A1.Flex", pattern: /resource\s+"oci_core_instance"\s+"[^"]+"\s*\{[^]*?^\s*shape\s*=\s*"([A-Za-z0-9.]+)"/m, source: link("oci", 176) },
       { key: "oci.vm.ocpus", label: "VM OCPUs", expected: "2", pattern: /^\s*ocpus\s*=\s*(\d+)/m, source: link("oci", 181) },
       { key: "oci.vm.memory_gb", label: "VM memory (GB)", expected: "12", pattern: /^\s*memory_in_gbs\s*=\s*(\d+)/m, source: link("oci", 182) },
       { key: "oci.vm.boot_volume_gb", label: "Boot volume (GB)", expected: "100", pattern: /^\s*boot_volume_size_in_gbs\s*=\s*(\d+)/m, source: link("oci", 188) },
