@@ -96,6 +96,26 @@ count=$(curl -fsS -b "$JAR_A" "$BASE_URL/api/scenarios" | grep -o "\"id\":\"$sid
 [ "$count" = "1" ] || fail "replaying a client op id must leave one row, found $count"
 pass "user A created a scenario; a replayed client op id made one row"
 
+# A prices the scenario on all four clouds (CI seeds a price fixture with pnpm seed:pricing-fixture)
+[ "$(status -X POST -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"spec\":$SPEC}" "$BASE_URL/api/price")" = "401" ] || fail "anonymous POST /api/price should be 401"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d "{\"spec\":$SPEC}" "$BASE_URL/api/price")" = "403" ] || fail "cross-origin POST /api/price should be 403"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"spec":{"users":{"mau":99999999,"requestsPerUser":1}}}' "$BASE_URL/api/price")" = "400" ] || fail "an out-of-range spec on /api/price should be 400"
+priced=$(curl -fsS -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"spec\":$SPEC}" "$BASE_URL/api/price") || fail "POST /api/price failed"
+[ "$(echo "$priced" | grep -o '"totalMicros"' | wc -l)" = "4" ] || fail "pricing should return four cloud totals: $priced"
+echo "$priced" | grep -Eq '"cheapest":"(aws|azure|gcp|oci)"' || fail "pricing should set a cheapest cloud (is the price fixture seeded?): $priced"
+for cloud in aws azure gcp oci; do echo "$priced" | grep -q "\"cloud\":\"$cloud\"" || fail "pricing result has no $cloud"; done
+pass "user A priced a scenario on four clouds and the cheapest is set"
+
+# "Should this app move?": public at the 10x preset; a scenario only for its owner
+move=$(curl -fsS "$BASE_URL/api/move?app=build-tracker&to=gcp") || fail "public GET /api/move failed"
+echo "$move" | grep -Eq '"verdict":"(move|consider|stay|not_enough_data|blocked)"' || fail "move advice has no verdict: $move"
+[ "$(status "$BASE_URL/api/move?app=build-tracker&to=gcp&scenario=$sid")" = "401" ] || fail "move with a scenario, signed out, should be 401"
+mine=$(curl -fsS -b "$JAR_A" "$BASE_URL/api/move?app=build-tracker&to=gcp&scenario=$sid") || fail "owner move with scenario failed"
+echo "$mine" | grep -q '"basis":"scenario"' || fail "owner move should use the scenario: $mine"
+[ "$(status -b "$JAR_B" "$BASE_URL/api/move?app=build-tracker&to=gcp&scenario=$sid")" = "404" ] || fail "user B's move on A's scenario should be 404"
+[ "$(status "$BASE_URL/api/move?app=build-tracker&to=mars")" = "400" ] || fail "an unknown cloud on /api/move should be 400"
+pass "move advice: public preset, owner-only scenario (B gets 404)"
+
 # B can't see or change it
 [ "$(status -b "$JAR_B" "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "user B reading A's scenario should be 404"
 [ "$(status -X PATCH -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"hijack"}' "$BASE_URL/api/scenarios/$sid")" = "404" ] || fail "user B patching A's scenario should be 404"

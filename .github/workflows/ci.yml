@@ -53,6 +53,8 @@ jobs:
         run: pnpm db:migrate
       - name: Seed the footprint fixture (no network)
         run: pnpm seed:footprint
+      - name: Seed the pricing fixture (no network)
+        run: pnpm seed:pricing-fixture
       - name: Start the built app
         run: |
           cp -r public .next/standalone/
