@@ -15,6 +15,7 @@
     "db:seed": "tsx scripts/seed.mts",
     "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.mts",
     "seed:footprint": "tsx scripts/seed-footprint.mts",
+    "seed:prices": "tsx scripts/seed-prices.mts",
     "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {

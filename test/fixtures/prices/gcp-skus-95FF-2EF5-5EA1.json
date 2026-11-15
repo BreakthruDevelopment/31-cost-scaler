@@ -1,0 +1,77 @@
+{
+ "skus": [
+  {
+   "name": "services/x/skus/S0017",
+   "skuId": "S0017-SYN",
+   "description": "Standard Storage Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud Storage",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.mo",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 20000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0018",
+   "skuId": "S0018-SYN",
+   "description": "Nearline Storage Iowa",
+   "category": {
+    "serviceDisplayName": "Cloud Storage",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy.mo",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 10000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  }
+ ],
+ "nextPageToken": ""
+}

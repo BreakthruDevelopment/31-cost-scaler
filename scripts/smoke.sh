@@ -63,14 +63,29 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 footprint=$(curl -fsS "$BASE_URL/api/footprint") || fail "GET /api/footprint failed"
 echo "$footprint" | grep -q '"name":"' || fail "/api/footprint lists no apps (CI seeds them with pnpm seed:footprint): $footprint"
 pass "public footprint lists apps"
-curl -fsS "$BASE_URL/api/prices" | grep -q '"prices":\[' || fail "/api/prices should return a prices array"
-pass "public price table responds"
+prices=$(curl -fsS "$BASE_URL/api/prices") || fail "GET /api/prices failed"
+for cloud in aws azure gcp oci; do
+  echo "$prices" | grep -q "\"cloud\":\"$cloud\"" || fail "/api/prices has no $cloud rows (CI seeds them with pnpm seed:prices)"
+done
+pass "public price table has rows for all four clouds"
+[ "$(curl -fsS "$BASE_URL/api/prices?cloud=oci" | grep -c '"cloud":"aws"')" = "0" ] || fail "/api/prices?cloud=oci returned other clouds"
+[ "$(status "$BASE_URL/api/prices?cloud=mars")" = "400" ] || fail "an unknown cloud filter should be 400"
+pass "price filters work and validate"
 
 # Signed-out and admin-only
 [ "$(status "$BASE_URL/api/scenarios")" = "401" ] || fail "anonymous scenario list should be 401"
 [ "$(status "$BASE_URL/api/admin/stats")" = "401" ] || fail "anonymous admin stats should be 401"
 [ "$(status -b "$JAR_A" "$BASE_URL/api/admin/stats")" = "403" ] || fail "a plain user's admin stats should be 403"
 pass "anonymous access refused; admin stats are admin only"
+
+# Price refresh is closed to the public
+[ "$(status -X POST -H "origin: $BASE_URL" "$BASE_URL/api/prices/refresh")" = "401" ] || fail "unauthenticated refresh should be 401"
+[ "$(status -X POST "$BASE_URL/api/prices/refresh")" = "401" ] || fail "unauthenticated refresh without an Origin should be 401"
+[ "$(status -X POST -H 'authorization: Bearer not-the-token' "$BASE_URL/api/prices/refresh")" = "401" ] || fail "a wrong bearer token should be 401"
+[ "$(status -X POST -H 'authorization: Bearer ' "$BASE_URL/api/prices/refresh")" = "401" ] || fail "an empty bearer token should be 401"
+[ "$(status -X POST -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/prices/refresh")" = "403" ] || fail "a plain user's refresh should be 403"
+[ "$(status -X POST -b "$JAR_A" -H 'authorization: Bearer not-the-token' -H "origin: $BASE_URL" "$BASE_URL/api/prices/refresh")" = "401" ] || fail "a wrong bearer must not fall back to the session"
+pass "price refresh: no credentials 401, wrong bearer 401, plain user 403"
 
 # Hostile writes
 [ "$(status -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d "{\"name\":\"x\",\"spec\":$SPEC}" "$BASE_URL/api/scenarios")" = "403" ] || fail "cross-origin create should be 403"

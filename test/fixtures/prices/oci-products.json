@@ -1,0 +1,164 @@
+{
+ "items": [
+  {
+   "partNumber": "B93113",
+   "displayName": "Compute - Standard - E4 - OCPU",
+   "metricName": "OCPU Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.025
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B93114",
+   "displayName": "Compute - Standard - E4 - Memory",
+   "metricName": "Gigabyte Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0015
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B91628",
+   "displayName": "Object Storage - Storage",
+   "metricName": "Gigabyte Storage Capacity Per Month",
+   "serviceCategory": "Storage",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0255
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B88327",
+   "displayName": "Outbound Data Transfer",
+   "metricName": "Gigabyte Outbound Data Transfer Per Month",
+   "serviceCategory": "Networking",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0,
+       "rangeMin": 0,
+       "rangeMax": 10240
+      },
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0085,
+       "rangeMin": 10240
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B93030",
+   "displayName": "Load Balancer Base",
+   "metricName": "Load Balancer Hour",
+   "serviceCategory": "Networking",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0113
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B95701",
+   "displayName": "Compute - Ampere A1 - OCPU",
+   "metricName": "OCPU Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.01
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B91961",
+   "displayName": "Block Volume - Storage",
+   "metricName": "Gigabyte Storage Capacity Per Month",
+   "serviceCategory": "Storage",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0255
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B93297",
+   "displayName": "Compute - Ampere A1 - OCPU",
+   "metricName": "OCPU Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.01
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B93298",
+   "displayName": "Compute - Ampere A1 - Memory",
+   "metricName": "Gigabyte Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0015
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

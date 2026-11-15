@@ -1,0 +1,56 @@
+{
+ "skus": [
+  {
+   "name": "services/x/skus/S0023",
+   "skuId": "S0023-SYN",
+   "description": "Identity Platform Monthly Active Users",
+   "category": {
+    "serviceDisplayName": "Identity Platform",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "global"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "1",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 0
+        }
+       },
+       {
+        "startUsageAmount": 50000,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 5500000
+        }
+       },
+       {
+        "startUsageAmount": 100000,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 4600000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  }
+ ],
+ "nextPageToken": ""
+}
