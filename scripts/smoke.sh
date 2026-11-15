@@ -138,6 +138,19 @@ pass "move advice: public preset, owner-only scenario (B gets 404)"
 curl -fsS -b "$JAR_B" "$BASE_URL/api/scenarios" | grep -q "$sid" && fail "A's scenario appeared in B's list"
 pass "user B gets 404 on A's scenario and never sees it listed"
 
+# The scaling advisor (demo answers in CI: a scripted run of the real tools). Signed-in only; own scenarios only.
+ASK='{"question":"Should build-tracker move at ten times the users?","app":"build-tracker"}'
+[ "$(status -X POST -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$ASK" "$BASE_URL/api/advice")" = "401" ] || fail "anonymous POST /api/advice should be 401"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d "$ASK" "$BASE_URL/api/advice")" = "403" ] || fail "cross-origin POST /api/advice should be 403"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"question":"nul\u0000byte"}' "$BASE_URL/api/advice")" = "400" ] || fail "a NUL byte in a question should be 400"
+[ "$(status -X POST -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"question\":\"What about this?\",\"scenarioId\":\"$sid\"}" "$BASE_URL/api/advice")" = "404" ] || fail "user B asking about A's scenario should be 404"
+advice=$(curl -fsS -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"question\":\"Should build-tracker move?\",\"app\":\"build-tracker\",\"scenarioId\":\"$sid\"}" "$BASE_URL/api/advice") || fail "POST /api/advice failed"
+echo "$advice" | grep -Eq '"recommendation":"(move|consider|stay|not_enough_data|blocked)"' || fail "the advisor answer has no recommendation: $advice"
+echo "$advice" | grep -q '"droppedFigures":\[\]' || fail "the demo answer had a figure that failed its check: $advice"
+curl -fsS -b "$JAR_A" "$BASE_URL/api/advice" | grep -q '"question":"Should build-tracker move?"' || fail "A's advice missing from A's history"
+curl -fsS -b "$JAR_B" "$BASE_URL/api/advice" | grep -q 'build-tracker' && fail "A's advice appeared in B's history"
+pass "advisor: signed-in only, B gets 404 on A's scenario, the answer is checked and stored for A alone"
+
 # Versioned update
 patched=$(curl -fsS -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"smoke renamed"}' "$BASE_URL/api/scenarios/$sid") || fail "owner PATCH failed"
 echo "$patched" | grep -q '"version":2' || fail "PATCH should bump the version: $patched"

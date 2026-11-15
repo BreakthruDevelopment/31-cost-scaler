@@ -29,7 +29,7 @@ export { embed, liveEmbedModel, EMBED_DIMS, DEMO_EMBED_MODEL } from "./embed";
 export const MAX_PROMPT_CHARS = 12_000;
 
 // Model names change often; set AI_MODEL per app and confirm it on Day 0.
-const DEFAULT_MODELS = {
+export const DEFAULT_MODELS = {
   // The lighter alias: faster and more free-tier headroom; the full Flash alias timed out or 503'd
   // on 600-token JSON answers in app 2's first live deploy.
   gemini: "gemini-flash-lite-latest",

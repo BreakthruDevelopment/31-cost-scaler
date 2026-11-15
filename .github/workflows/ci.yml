@@ -43,7 +43,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
@@ -81,9 +81,16 @@ jobs:
           context: .
           target: runner
           push: false
+          load: true
           tags: app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Web image size (the ADK budget is 600 MB)
+        run: |
+          bytes=$(docker image inspect app:ci --format '{{.Size}}')
+          echo "web image: $((bytes / 1000000)) MB"
+          echo "Web image size: $((bytes / 1000000)) MB (budget 600 MB)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$bytes" -lt 600000000 ] || { echo "image over the 600 MB ADK budget" >&2; exit 1; }
       - name: Build migration image
         uses: docker/build-push-action@v6
         with:

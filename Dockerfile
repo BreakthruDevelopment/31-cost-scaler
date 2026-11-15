@@ -2,7 +2,7 @@
 # Build:  docker build -t app .
 # Run:    docker run -p 3000:3000 --env-file .env app
 
-FROM node:22-alpine AS base
+FROM node:24-alpine AS base
 RUN corepack enable
 WORKDIR /app
 
@@ -22,7 +22,7 @@ FROM build AS migrate
 CMD ["pnpm", "db:migrate"]
 
 # Web server: only the standalone bundle, run as a non-root user.
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

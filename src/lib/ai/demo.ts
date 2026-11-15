@@ -6,6 +6,16 @@ import type { DemoToolScript } from "./types";
  * Each app adds a fixture for each AI task it defines.
  */
 export const demoFixtures: Record<string, unknown> = {
+  // Static shape of a scaling answer. The advisor itself runs the scripted tool loop below (real tools, real numbers);
+  // this fixture is only what a plain generate() call for the task would return.
+  "scaling-advice": {
+    headline: "Recorded demo answer: no live model",
+    recommendation: "not_enough_data",
+    targetCloud: null,
+    figures: [],
+    explanation: "This is a recorded answer. Ask again with a live model, or read the computed tables on the footprint page.",
+    caveats: ["Demo answer (no live model)"],
+  },
   "summarize-items": {
     summary:
       "You have a few open items. The most recent ones focus on setup work; nothing looks overdue.",
@@ -30,6 +40,68 @@ export const demoToolScripts: Record<string, (ctx: unknown) => DemoToolScript> =
       },
     };
   },
+};
+
+const CLOUDS_IN_ORDER = ["aws", "azure", "gcp", "oci"] as const;
+const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Scaling advisor demo: getFootprint(app ?? "helpdesk") -> priceScenario(the user's scenario, else the 10x users preset)
+ * -> migrationBreakEven(app, its cloud, the cheapest cloud it is not on). `final` writes the answer from those results,
+ * so a demo shows real numbers and passes the same server checks as a live one.
+ */
+demoToolScripts["scaling-advice"] = (ctx) => {
+  const c = isObj(ctx) ? ctx : {};
+  const app = typeof c.app === "string" ? c.app : "helpdesk";
+  const scenarioId = typeof c.scenarioId === "string" ? c.scenarioId : undefined;
+  return {
+    steps: [
+      { call: { name: "getFootprint", args: { app } } },
+      { call: { name: "priceScenario", args: scenarioId ? { scenarioId } : { preset: "10x_users" } } },
+      {
+        call: (previous) => {
+          const fp = previous[0]?.ok && isObj(previous[0].data) ? previous[0].data : {};
+          const runsOn = Array.isArray(fp.clouds) ? fp.clouds.filter((x): x is string => typeof x === "string") : [];
+          const scen = previous[1]?.ok && isObj(previous[1].data) && isObj(previous[1].data.clouds) ? previous[1].data.clouds : {};
+          const candidates = CLOUDS_IN_ORDER.filter((x) => !runsOn.includes(x));
+          const price = (x: string) => (isObj(scen[x]) && typeof scen[x].listUsd === "number" ? scen[x].listUsd : Infinity);
+          const to = [...candidates].sort((a, b) => price(a) - price(b))[0] ?? "aws";
+          return { name: "migrationBreakEven", args: { app, from: runsOn[0], to, ...(scenarioId ? { scenarioId } : {}) } };
+        },
+      },
+    ],
+    final: (results) => {
+      const move = results[2];
+      const m = move?.ok && isObj(move.data) ? move.data : null;
+      const call = m && typeof m.callId === "string" ? m.callId : "c3";
+      if (!m) {
+        return {
+          headline: `Recorded demo answer: ${app} could not be analysed`,
+          recommendation: "not_enough_data",
+          targetCloud: null,
+          figures: [],
+          explanation: "The demo run could not price this app. Check the app name and the price table.",
+          caveats: ["Demo answer (no live model)"],
+        };
+      }
+      const fig = (label: string, key: string, unit: "per_month" | "one_time" | "months") =>
+        typeof m[key] === "number" ? [{ label, valueUsd: m[key] as number, unit, call, path: `/${key}` }] : [];
+      const verdict = typeof m.verdict === "string" ? m.verdict : "not_enough_data";
+      return {
+        headline: scenarioId ? `Recorded demo answer: ${app} on your scenario` : `Recorded demo answer: ${app} at ten times the users`,
+        recommendation: verdict,
+        targetCloud: verdict === "move" || verdict === "consider" ? m.to : null,
+        figures: [
+          ...fig(`Monthly list cost on ${String(m.from)}`, "monthlyFromUsd", "per_month"),
+          ...fig(`Monthly list cost on ${String(m.to)}`, "monthlyToUsd", "per_month"),
+          ...fig("One-time cost of moving", "oneTimeUsd", "one_time"),
+          ...fig("Months to pay it back", "breakEvenMonths", "months"),
+        ],
+        explanation: `Demo: ${Array.isArray(m.reasons) ? m.reasons.filter((r) => typeof r === "string").join(" ") : "see the figures."}`.slice(0, 600),
+        caveats: ["Demo answer (no live model)", "List prices only, not a quote."],
+      };
+    },
+  };
 };
 
 export function demoAnswer(task: string): string {

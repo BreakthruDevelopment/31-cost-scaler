@@ -25,7 +25,7 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type ToolContext = { signal: AbortSignal };
 
 export type ToolDef<A = unknown, R = unknown> = {
-  /** `^[a-z][a-z0-9_]{0,39}$`; `respond` is reserved for the final answer. */
+  /** `^[a-zA-Z][a-zA-Z0-9_]{0,39}$`; `respond` is reserved for the final answer. */
   name: string;
   description: string;
   /** Validated on every call; the model's JSON Schema is generated from it. */
