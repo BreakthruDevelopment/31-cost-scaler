@@ -61,6 +61,8 @@ export type ToolTrace = {
   calls: { tool: string; outcome: string; ms: number }[];
   /** A propose tool's handler has started (it may have written). Not logged; stops the demo fallback from repeating it. */
   proposed?: boolean;
+  /** Model replies that came back (a live call cost something, even if its answer was unusable). */
+  liveResponses?: number;
 };
 
 type Executed = { name: string; ok: boolean; data: unknown; output: Record<string, unknown>; outcome: string };
@@ -236,6 +238,7 @@ export async function runToolLoop<T>(req: LoopRequest<T>, provider: AiProvider, 
         maxOutputTokens: req.maxOutputTokens,
         deadlineAt,
       });
+      trace.liveResponses = (trace.liveResponses ?? 0) + 1;
     } catch (err) {
       if (Date.now() >= deadlineAt - 50 && (isTimeout(err) || (err instanceof AiError && err.status === "timeout"))) throw timeoutError();
       throw err;

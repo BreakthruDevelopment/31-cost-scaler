@@ -66,7 +66,8 @@ export async function askAdvisor(actor: Actor, input: unknown): Promise<{ advice
 type AdviceRow = Awaited<ReturnType<typeof createAdvice>>["advice"];
 const inflight = new Map<string, Promise<{ advice: AdviceRow; created: boolean }>>();
 
-async function runAdvice(actor: Actor, q: AskInput): Promise<{ advice: AdviceRow; created: boolean }> {  if (q.scenarioId !== undefined) await getScenario(actor, q.scenarioId); // owner only: 404 for anyone else's
+async function runAdvice(actor: Actor, q: AskInput): Promise<{ advice: AdviceRow; created: boolean }> {
+  if (q.scenarioId !== undefined) await getScenario(actor, q.scenarioId); // owner only: 404 for anyone else's
   if (q.app !== undefined && !(await listFootprint()).some((a) => a.name === q.app)) throw new NotFoundError();
 
   const context = [q.app ? `The user is asking about the app "${q.app}".` : null, q.scenarioId ? `The user chose their saved scenario with id ${q.scenarioId}.` : null].filter(Boolean).join("\n");

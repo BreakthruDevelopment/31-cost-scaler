@@ -403,6 +403,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
           maxOutputTokens: req.maxOutputTokens ?? 1200,
           demoContext: req.demoContext,
         });
+        if (result.liveCalls) liveSpent = true; // a live reply arrived before generate() fell back: it cost the day's budget
         if (result.demo) {
           // generate() fell back to its demo script after a provider failure. Drop this attempt's calls (they are the
           // demo's, mixed with nothing live) and run the demo once, cleanly, so the trace is exactly one run.
@@ -412,7 +413,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
         return done(result.data, "generate", result.provider, result.model, 0, fallbackReason);
       } catch (err) {
         if (err instanceof AiError && err.kind === "input_rejected") throw err;
-        if (err instanceof AiError && (err.kind === "invalid_output" || err.kind === "tool_loop")) liveSpent = true; // the model answered
+        if (err instanceof AiError && err.liveCalls) liveSpent = true; // the model answered
         fallbackReason = fallbackReason ?? failureKind(err);
         log.warn("ai.agent.generate_failed", { task: req.task, kind: failureKind(err) });
       }

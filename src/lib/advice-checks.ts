@@ -83,15 +83,18 @@ export function resolvePointer(root: unknown, path: string): unknown {
   return node;
 }
 
-// Digits in any script (\p{Nd}), so "４５" is a number too.
-const NUMBER = /\$?\p{Nd}[\p{Nd},]*(?:\.\p{Nd}+)?%?/gu;
+// Numbers in any script (\p{N}: digits, "４５", "½", "²", Roman numeral signs). Format characters (\p{Cf}, zero-width) are removed first.
+const NUMBER = /\$?\p{N}[\p{N},]*(?:\.\p{N}+)?%?/gu;
+const FORMAT_CHARS = /\p{Cf}/gu;
 const ASCII_NUMBER = /^\$?[0-9][0-9,]*(?:\.[0-9]+)?$/;
 // Number words. "one" is left alone in "one-time" and "one time", which the app's own wording uses.
-const NUMBER_WORD = /\b(?:zero|one(?![- ]time)|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|dozen)\b/gi;
+const NUMBER_WORD = /\b(?:zero|one(?![- ]time)|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|dozen|twice|half|couple|grand)\b/gi;
 
 /** Removes numbers (and number words) not in `allowed` (cents); text inside a `keep` string is left as written. */
 export function stripNumbers(text: string, allowed: ReadonlySet<number>, keep: readonly string[]): { text: string; removed: number } {
   let removed = 0;
+  // Zero-width characters inside a number ("5\u200b000") would otherwise split it; they carry no text of their own.
+  text = text.replace(FORMAT_CHARS, "");
   const names = [...new Set(keep)].filter(Boolean).sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const parts = names.length ? text.split(new RegExp(`(${names.join("|")})`)) : [text];
   const out = parts.map((part, i) => {

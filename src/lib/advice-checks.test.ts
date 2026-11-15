@@ -127,6 +127,11 @@ describe("stray numbers", () => {
     expect(checks.strippedNumbers).toBe(5);
   });
 
+  it("also catches other number characters, zero-width splits, and more number words", () => {
+    const { output } = checkAdvice(answer({ explanation: "Saves 5\u200b000, ½ of it, ² more, twice over, half price, a couple, a grand." }), [move()]);
+    expect(output.explanation).toBe("Saves of it, more, over, price, a, a.");
+  });
+
   it("leaves a demo answer's text (written by code) alone", () => {
     const { output } = checkAdvice(answer({ headline: "Recorded demo answer: 10x users" }), [move()], { trustedText: true });
     expect(output.headline).toBe("Recorded demo answer: 10x users");

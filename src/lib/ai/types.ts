@@ -89,6 +89,8 @@ export type GenerateResult<T> = {
   /** True when the answer came from recorded demo data instead of a live model. */
   demo: boolean;
   latencyMs: number;
+  /** Tool loops only: live model replies received, even when the answer then came from the demo script. */
+  liveCalls?: number;
 };
 
 export interface AiProvider {
@@ -130,6 +132,8 @@ export type ToolStepResult = {
 };
 
 export class AiError extends Error {
+  /** Set by a tool loop that failed after live model replies arrived (they cost quota even though the answer failed). */
+  liveCalls?: number;
   constructor(
     message: string,
     readonly kind: "quota" | "provider" | "invalid_output" | "input_rejected" | "tool_loop",

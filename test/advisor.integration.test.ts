@@ -318,6 +318,24 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
       expect(Number((await sql`select count from daily_usage where kind = 'ai' and day = (now() at time zone 'utc')::date`)[0].count)).toBe(1);
     });
 
+    it("keeps the day's charge when generate() got a live reply and then fell back to its own demo, or failed", async () => {
+      const reply = () => new Response(JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "getFootprint", args: { app: "ad4-plain" } } }] } }] }), { status: 200 });
+      for (const fallback of ["true", "false"]) {
+        await sql`delete from daily_usage where kind = 'ai'`;
+        await sql`delete from rate_event where user_id = ${A.id} and kind = 'advice'`;
+        setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key", AI_FALLBACK_TO_DEMO: fallback });
+        let n = 0;
+        vi.stubGlobal("fetch", vi.fn(async () => (n++ === 0 ? reply() : new Response("{}", { status: 400 }))));
+        const limits = { userId: A.id, rate: { kind: "advice" as const, limit: 10, message: "m" }, daily: { kind: "ai" as const, cap: 5 } };
+        const req = { task: "scaling-advice", system: "s", schema: checks.adviceOutput, input: "q", tools: tools.advisorTools({ id: A.id, role: "user" }), demoContext: { app: "ad4-plain" }, limits };
+        const run = agent.runAgent(req, { innerLlm: new FailingLlm() });
+        if (fallback === "true") expect(await run).toMatchObject({ engine: "demo", demo: true });
+        else await expect(run).rejects.toMatchObject({ name: "AiError" });
+        expect(Number((await sql`select count from daily_usage where kind = 'ai' and day = (now() at time zone 'utc')::date`)[0].count)).toBe(1);
+        // a pure demo fallback with no live reply still gives the slot back (covered above), so the charge is for the reply
+      }
+    });
+
     it("at the daily budget the answer is the demo script (a live run counts, a demo run does not)", async () => {
       await sql`delete from daily_usage where kind = 'ai'`;
       await sql`delete from rate_event where user_id = ${A.id} and kind = 'advice'`;
