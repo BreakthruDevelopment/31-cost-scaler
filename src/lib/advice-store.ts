@@ -44,8 +44,19 @@ export type NewAdvice = {
   checks: unknown;
   provider: string;
   demo: boolean;
+  /** Client-minted id for one user intent; a second create with the same id returns the first row. */
+  clientOpId?: string | null;
 };
 
+/** The caller's own answer for a client op id, or null. */
+export async function findAdviceByOp(actor: Actor, clientOpId: string) {
+  assertCan(actor, "list", "advice");
+  const { advice } = schema;
+  const [row] = await db().select().from(advice).where(ownedBy(advice, actor, eq(advice.clientOpId, clientOpId)));
+  return row ?? null;
+}
+
+/** Idempotent per (owner, client op id): the unique index decides, so two parallel creates leave one row. */
 export async function createAdvice(actor: Actor, input: NewAdvice) {
   assertCan(actor, "create", "advice");
   const { advice } = schema;
@@ -61,7 +72,12 @@ export async function createAdvice(actor: Actor, input: NewAdvice) {
       checks: withoutNul(input.checks),
       provider: input.provider,
       demo: input.demo,
+      clientOpId: input.clientOpId ?? null,
     })
+    .onConflictDoNothing({ target: [advice.ownerId, advice.clientOpId] })
     .returning();
-  return row;
+  if (row) return { advice: row, created: true };
+  const existing = input.clientOpId ? await findAdviceByOp(actor, input.clientOpId) : null;
+  if (!existing) throw new Error("advice insert conflicted but no row was found");
+  return { advice: existing, created: false };
 }

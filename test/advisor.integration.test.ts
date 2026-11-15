@@ -55,6 +55,7 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
   let route: typeof import("@/app/api/advice/route");
   let store: typeof import("@/lib/advice-store");
   let tools: typeof import("@/lib/advice-tools");
+  let advisor: typeof import("@/lib/advisor");
   let agent: typeof import("@/lib/ai/agent");
   let checks: typeof import("@/lib/advice-checks");
   let sidA: string;
@@ -79,6 +80,7 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
     const spec = { ...BASE_SPEC, users: { ...BASE_SPEC.users, mau: CANARY_MAU } };
     [{ id: sidA }] = await sql`insert into scenario (owner_id, name, spec) values (${A.id}, 'CANARY-SCENARIO-NAME', ${sql.json(spec)}) returning id`;
     route = await import("@/app/api/advice/route");
+    advisor = await import("@/lib/advisor");
     store = await import("@/lib/advice-store");
     tools = await import("@/lib/advice-tools");
     agent = await import("@/lib/ai/agent");
@@ -207,14 +209,66 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
     });
 
     it("the owner column is always the actor, and the database refuses a scenario that is not theirs", async () => {
-      const row = await store.createAdvice(B, { question: "q", appName: null, scenarioId: null, output: {}, trace: [], checks: {}, provider: "demo", demo: true });
+      const { advice: row } = await store.createAdvice(B, { question: "q", appName: null, scenarioId: null, output: {}, trace: [], checks: {}, provider: "demo", demo: true });
       expect(row.ownerId).toBe(B.id);
       await expect(store.createAdvice(B, { question: "q", appName: null, scenarioId: sidA, output: {}, trace: [], checks: {}, provider: "demo", demo: true })).rejects.toThrow();
     });
 
     it("NUL bytes in model text are dropped, not a 500", async () => {
-      const row = await store.createAdvice(A, { question: "q", appName: null, scenarioId: null, output: { headline: "a\0b", list: ["c\0"] }, trace: [{ "k\0": "v\0" }], checks: {}, provider: "demo", demo: true });
+      const { advice: row } = await store.createAdvice(A, { question: "q", appName: null, scenarioId: null, output: { headline: "a\0b", list: ["c\0"] }, trace: [{ "k\0": "v\0" }], checks: {}, provider: "demo", demo: true });
       expect(row.output).toEqual({ headline: "ab", list: ["c"] });
+    });
+  });
+
+  describe("idempotent retries (clientOpId)", () => {
+    const rateCount = async (id: string) => Number((await sql`select count(*) from rate_event where user_id = ${id} and kind = 'advice'`)[0].count);
+    const rows = async (op: string) => Number((await sql`select count(*) from advice where client_op_id = ${op}`)[0].count);
+
+    it("a replay returns the first answer (200), runs nothing and is not charged", async () => {
+      const op = crypto.randomUUID();
+      const before = await rateCount(B.id);
+      const first = await ask(B, { question: "Should ad4-plain move?", app: "ad4-plain", clientOpId: op });
+      expect(first.status).toBe(201);
+      const { advice: a } = (await first.json()) as { advice: Row };
+      expect(await rateCount(B.id)).toBe(before + 1);
+      const again = await ask(B, { question: "Should ad4-plain move?", app: "ad4-plain", clientOpId: op });
+      expect(again.status).toBe(200);
+      expect(((await again.json()) as { advice: Row }).advice.id).toBe(a.id);
+      expect(await rateCount(B.id)).toBe(before + 1);
+      expect(await rows(op)).toBe(1);
+    });
+
+    it("parallel duplicates make one row and one charge", async () => {
+      const op = crypto.randomUUID();
+      const before = await rateCount(B.id);
+      current = B;
+      const body = { question: "Twice at once", app: "ad4-plain", clientOpId: op };
+      const results = await Promise.all([advisor.askAdvisor(B, body), advisor.askAdvisor(B, body), advisor.askAdvisor(B, body)]);
+      expect(new Set(results.map((r) => r.advice.id)).size).toBe(1);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(await rows(op)).toBe(1);
+      expect(await rateCount(B.id)).toBe(before + 1);
+    });
+
+    it("the database keeps one row even when two writers race past the lookup", async () => {
+      const op = crypto.randomUUID();
+      const make = () => store.createAdvice(B, { question: "q", appName: null, scenarioId: null, output: {}, trace: [], checks: {}, provider: "demo", demo: true, clientOpId: op });
+      const [x, y] = await Promise.all([make(), make()]);
+      expect(x.advice.id).toBe(y.advice.id);
+      expect([x.created, y.created].sort()).toEqual([false, true]);
+      expect(await rows(op)).toBe(1);
+    });
+
+    it("an op id is per user: another user's replay of the same id is their own question", async () => {
+      const op = crypto.randomUUID();
+      const a = await advisor.askAdvisor(A, { question: "q", app: "ad4-plain", clientOpId: op });
+      const b = await advisor.askAdvisor(B, { question: "q", app: "ad4-plain", clientOpId: op });
+      expect(a.advice.id).not.toBe(b.advice.id);
+      expect(b.created).toBe(true);
+    });
+
+    it("rejects a malformed op id", async () => {
+      expect((await ask(B, { question: "q", clientOpId: "nope" })).status).toBe(400);
     });
   });
 
@@ -250,6 +304,18 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
       await expect(agent.runAgent(req, { innerLlm: new FailingLlm() })).rejects.toMatchObject({ name: "AiError" });
       expect(Number((await sql`select count(*) from rate_event where user_id = ${A.id} and kind = 'advice'`)[0].count)).toBe(0);
       expect(Number((await sql`select coalesce(sum(count), 0) as n from daily_usage where kind = 'ai'`)[0].n)).toBe(0);
+    });
+
+    it("keeps the day's charge once a live model answered, even if that answer was unusable; the attempt itself is still given back", async () => {
+      await sql`delete from daily_usage where kind = 'ai'`;
+      await sql`delete from rate_event where user_id = ${A.id} and kind = 'advice'`;
+      setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key", AI_FALLBACK_TO_DEMO: "false" });
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
+      const limits = { userId: A.id, rate: { kind: "advice" as const, limit: 10, message: "m" }, daily: { kind: "ai" as const, cap: 5 } };
+      const req = { task: "scaling-advice", system: "s", schema: checks.adviceOutput, input: "q", tools: tools.advisorTools({ id: A.id, role: "user" }), limits };
+      await expect(agent.runAgent(req, { innerLlm: new ScriptedLlm([], () => "not json") })).rejects.toMatchObject({ name: "AiError" });
+      expect(Number((await sql`select count(*) from rate_event where user_id = ${A.id} and kind = 'advice'`)[0].count)).toBe(0);
+      expect(Number((await sql`select count from daily_usage where kind = 'ai' and day = (now() at time zone 'utc')::date`)[0].count)).toBe(1);
     });
 
     it("at the daily budget the answer is the demo script (a live run counts, a demo run does not)", async () => {

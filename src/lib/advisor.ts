@@ -5,7 +5,7 @@ import { runAgent } from "@/lib/ai/agent";
 import { AI_DAILY_CAP } from "@/lib/admin-stats";
 import { type AdviceOutput, adviceOutput, checkAdvice } from "@/lib/advice-checks";
 import { advisorTools } from "@/lib/advice-tools";
-import { createAdvice } from "@/lib/advice-store";
+import { createAdvice, findAdviceByOp } from "@/lib/advice-store";
 import type { Actor } from "@/lib/auth/rbac";
 import { BadRequestError, NotFoundError } from "@/lib/errors";
 import { listFootprint } from "@/lib/footprint/refresh";
@@ -34,6 +34,8 @@ export const askInput = z.strictObject({
   app: footprintName.optional(),
   /** One of the caller's own saved scenarios; anyone else's id is a 404. */
   scenarioId: z.string().max(64).optional(),
+  /** One user intent (`opFor` in src/lib/client-op.ts). A retry with the same id returns the first answer and is not charged. */
+  clientOpId: z.string().uuid().optional(),
 });
 
 export type AskInput = z.infer<typeof askInput>;
@@ -43,11 +45,28 @@ export type AskInput = z.infer<typeof askInput>;
  * or unknown scenario id is 404 before any model call. 10 questions per user per hour; at the app's daily budget, or
  * without a key, the answer comes from the demo script over the real tools.
  */
-export async function askAdvisor(actor: Actor, input: unknown) {
+export async function askAdvisor(actor: Actor, input: unknown): Promise<{ advice: AdviceRow; created: boolean }> {
   assertCan(actor, "create", "advice");
   if (jsonHasNul(input)) throw new BadRequestError("Text can't contain null characters");
   const q = askInput.parse(input);
-  if (q.scenarioId !== undefined) await getScenario(actor, q.scenarioId); // owner only: 404 for anyone else's
+  if (!q.clientOpId) return runAdvice(actor, q);
+  // A replay returns the stored answer before anything runs or is charged.
+  const existing = await findAdviceByOp(actor, q.clientOpId);
+  if (existing) return { advice: existing, created: false };
+  // A duplicate that arrives while the first is still running (a double tap) waits for it instead of running again.
+  // No await between get and set, so two callers can't both start. Across instances the unique index keeps one row.
+  const key = `${actor.id}:${q.clientOpId}`;
+  const running = inflight.get(key);
+  if (running) return running.then((r) => ({ advice: r.advice, created: false }));
+  const started = runAdvice(actor, q).finally(() => inflight.delete(key));
+  inflight.set(key, started);
+  return started;
+}
+
+type AdviceRow = Awaited<ReturnType<typeof createAdvice>>["advice"];
+const inflight = new Map<string, Promise<{ advice: AdviceRow; created: boolean }>>();
+
+async function runAdvice(actor: Actor, q: AskInput): Promise<{ advice: AdviceRow; created: boolean }> {  if (q.scenarioId !== undefined) await getScenario(actor, q.scenarioId); // owner only: 404 for anyone else's
   if (q.app !== undefined && !(await listFootprint()).some((a) => a.name === q.app)) throw new NotFoundError();
 
   const context = [q.app ? `The user is asking about the app "${q.app}".` : null, q.scenarioId ? `The user chose their saved scenario with id ${q.scenarioId}.` : null].filter(Boolean).join("\n");
@@ -65,7 +84,7 @@ export async function askAdvisor(actor: Actor, input: unknown) {
       daily: { kind: "ai", cap: AI_DAILY_CAP },
     },
   });
-  const { output, checks } = checkAdvice(result.data, result.calls);
+  const { output, checks } = checkAdvice(result.data, result.calls, { trustedText: result.demo });
   return createAdvice(actor, {
     question: q.question,
     appName: q.app ?? null,
@@ -75,5 +94,6 @@ export async function askAdvisor(actor: Actor, input: unknown) {
     checks: { ...checks, engine: result.engine, fallbackReason: result.fallbackReason },
     provider: result.provider,
     demo: result.demo,
+    clientOpId: q.clientOpId ?? null,
   });
 }

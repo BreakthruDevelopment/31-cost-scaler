@@ -143,6 +143,29 @@ describe("runAgent falls back to generate({ tools })", () => {
     expect(result.calls.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
   });
 
+  it("when generate() itself falls back to demo, the abandoned live calls are discarded: the trace is one clean demo run", async () => {
+    live();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
+    // ADK makes live calls (a "move" verdict among them), then returns unusable text.
+    const llm = new ScriptedLlm(
+      [{ name: "migrationBreakEven", args: { app: "helpdesk", to: "azure" } }, { name: "getFootprint", args: { app: "helpdesk" } }],
+      () => "not json",
+    );
+    const result = await runAgent(scalingRequest(), { innerLlm: llm });
+    expect(result.engine).toBe("demo");
+    expect(result.calls.map((c) => [c.id, c.name])).toEqual([["c1", "getFootprint"], ["c2", "priceScenario"], ["c3", "migrationBreakEven"]]);
+    expect(result.calls[2].args).toMatchObject({ to: "aws" }); // the demo's choice, not the live call's azure
+    expect(result.fallbackReason).toBe("invalid_output");
+  });
+
+  it("does not let ADK print its own console lines", async () => {
+    live();
+    const spies = (["log", "info", "debug", "warn"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    await runAgent(base, { innerLlm: new ScriptedLlm([{ name: "lookup", args: { n: 1 } }], () => ({ reply: "ok", value: 1 })) });
+    expect(spies.flatMap((s) => s.mock.calls).filter((c) => String(c[0]).includes("ADK"))).toEqual([]);
+    spies.forEach((s) => s.mockRestore());
+  });
+
   it("throws when both engines fail and demo fallback is off", async () => {
     live({ AI_FALLBACK_TO_DEMO: "false" });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));

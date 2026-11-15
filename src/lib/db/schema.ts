@@ -219,10 +219,13 @@ export const advice = pgTable(
     checks: jsonb("checks").$type<unknown>().notNull(),
     provider: text("provider").notNull(),
     demo: boolean("demo").notNull().default(false),
+    /** One user intent (see `src/lib/client-op.ts`): a retry with the same id returns the first answer. */
+    clientOpId: uuid("client_op_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("advice_owner_created_idx").on(t.ownerId, t.createdAt),
+    uniqueIndex("advice_owner_client_op_uidx").on(t.ownerId, t.clientOpId),
     // MATCH SIMPLE: with a null scenario_id nothing is checked; otherwise the scenario must belong to the same owner.
     foreignKey({ columns: [t.scenarioId, t.ownerId], foreignColumns: [scenario.id, scenario.ownerId], name: "advice_scenario_owner_fk" }).onDelete("cascade"),
     check("advice_question_chk", sql`char_length(${t.question}) <= 500`),

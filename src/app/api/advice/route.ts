@@ -11,12 +11,14 @@ export const maxDuration = 25;
 /**
  * POST /api/advice: body { question, app?, scenarioId? }. Runs the scaling advisor and returns the stored answer.
  * Signed-in users only, same-origin, 16 KB body, 10 questions per user per hour; someone else's scenario id is a 404.
+ * With `clientOpId` a retry returns the first answer (200, not 201) and is not charged.
  */
 export async function POST(request: Request) {
   try {
     requireSameOrigin(request);
     const user = await requireUser();
-    return Response.json({ advice: await askAdvisor(user, await readJson(request)) }, { status: 201 });
+    const { advice, created } = await askAdvisor(user, await readJson(request));
+    return Response.json({ advice }, { status: created ? 201 : 200 });
   } catch (err) {
     return errorResponse(err);
   }

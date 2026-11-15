@@ -4,12 +4,13 @@ import { z } from "zod";
  * Server-side checks on the advisor's answer. The model only chooses words and which tool results to cite; every
  * number a reader sees, and the verdict, comes from tool results the server recorded.
  *
- *  1. A figure must name a recorded call and a JSON pointer into its result, and equal that number to the cent.
- *     Failures are dropped and listed; survivors show the tool's own number.
+ *  1. A figure must name a recorded call and a JSON pointer into its result, equal that number to the cent, and point at
+ *     a path that has a known meaning (`describeFigure`). Failures are dropped and listed. Survivors show the tool's own
+ *     number, with the unit and label the server derives from the path, never the model's.
  *  2. If `migrationBreakEven` ran, the recommendation and target cloud are its verdict (the best verdict when it ran
  *     more than once). If it never ran, the answer cannot recommend a move: `not_enough_data`.
- *  3. Any number written in the headline, a figure label, the explanation or a caveat that is not a surviving figure
- *     (or one of the rule thresholds the code itself wrote into a verdict's reasons) is removed.
+ *  3. Any number (digits in any script, and number words) written in the headline, the explanation or a caveat that is
+ *     not a surviving figure is removed. A verdict's reasons, written by code, may be quoted verbatim.
  *  4. Blocker reasons from the code are added as caveats.
  *  5. If no figure survived and no verdict ran, the answer becomes a fixed sentence pointing at the computed tables.
  *
@@ -43,7 +44,7 @@ export type AdviceOutput = z.infer<typeof adviceOutput>;
 
 export type TraceCall = { id: string; name: string; args: unknown; result: unknown; error: string | null };
 
-export type DroppedFigure = { label: string; call: string; path: string; reason: "unknown_call" | "call_failed" | "path_not_found" | "not_a_number" | "mismatch" };
+export type DroppedFigure = { label: string; call: string; path: string; reason: "unknown_call" | "call_failed" | "path_not_found" | "not_a_number" | "unsupported_path" | "mismatch" | "duplicate" };
 
 export type AdviceChecks = {
   droppedFigures: DroppedFigure[];
@@ -82,25 +83,30 @@ export function resolvePointer(root: unknown, path: string): unknown {
   return node;
 }
 
-const NUMBER = /\$?\d[\d,]*(?:\.\d+)?%?/g;
+// Digits in any script (\p{Nd}), so "４５" is a number too.
+const NUMBER = /\$?\p{Nd}[\p{Nd},]*(?:\.\p{Nd}+)?%?/gu;
+const ASCII_NUMBER = /^\$?[0-9][0-9,]*(?:\.[0-9]+)?$/;
+// Number words. "one" is left alone in "one-time" and "one time", which the app's own wording uses.
+const NUMBER_WORD = /\b(?:zero|one(?![- ]time)|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|dozen)\b/gi;
 
-function numbersIn(text: string): number[] {
-  return [...text.matchAll(NUMBER)].map((m) => Number(m[0].replace(/[$,%]/g, ""))).filter(Number.isFinite);
-}
-
-/** Removes number tokens whose value (to the cent) is not allowed; keeps app names (which may hold digits) intact. */
+/** Removes numbers (and number words) not in `allowed` (cents); text inside a `keep` string is left as written. */
 export function stripNumbers(text: string, allowed: ReadonlySet<number>, keep: readonly string[]): { text: string; removed: number } {
   let removed = 0;
   const names = [...new Set(keep)].filter(Boolean).sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const parts = names.length ? text.split(new RegExp(`(${names.join("|")})`)) : [text];
   const out = parts.map((part, i) => {
-    if (names.length && i % 2 === 1) return part; // a kept name
-    return part.replace(NUMBER, (token) => {
-      const value = Number(token.replace(/[$,%]/g, ""));
-      if (!token.endsWith("%") && Number.isFinite(value) && allowed.has(cents(value))) return token;
-      removed++;
-      return "";
-    });
+    if (names.length && i % 2 === 1) return part; // a kept name or reason
+    return part
+      .replace(NUMBER, (token) => {
+        const value = Number(token.replace(/[$,]/g, ""));
+        if (ASCII_NUMBER.test(token) && Number.isFinite(value) && allowed.has(cents(value))) return token;
+        removed++;
+        return "";
+      })
+      .replace(NUMBER_WORD, () => {
+        removed++;
+        return "";
+      });
   });
   const cleaned = out.join("").replace(/[ \t]{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
   return { text: cleaned, removed };
@@ -136,20 +142,54 @@ function bestVerdict(vs: Verdict[]): Verdict | null {
   return best;
 }
 
-/** App names the answer may repeat: from the arguments and results of the calls. */
+/**
+ * App names the answer may repeat (they can hold digits): only from successful results, which exist in the footprint
+ * because the tool looked them up. Never from arguments: a model could "name" an app 5000 to whitelist the number.
+ */
 function appNames(calls: readonly TraceCall[]): string[] {
   const names: string[] = [];
   for (const c of calls) {
-    if (isRecord(c.args) && typeof c.args.app === "string") names.push(c.args.app);
-    if (!c.error && isRecord(c.result) && typeof c.result.name === "string") names.push(c.result.name);
+    if (c.error || !isRecord(c.result)) continue;
+    if (c.name === "getFootprint" && typeof c.result.name === "string") names.push(c.result.name);
+    if (c.name === "migrationBreakEven" && typeof c.result.app === "string") names.push(c.result.app);
   }
   return names;
 }
 
-export function checkAdvice(output: AdviceOutput, calls: readonly TraceCall[]): { output: AdviceOutput; checks: AdviceChecks } {
+const CLOUD_NAME: Record<string, string> = { aws: "AWS", azure: "Azure", gcp: "Google Cloud", oci: "Oracle Cloud" };
+const cloudName = (c: unknown) => (typeof c === "string" && Object.hasOwn(CLOUD_NAME, c) ? CLOUD_NAME[c] : undefined);
+
+/**
+ * What each figure path means: its unit and a label the server writes. Anything not listed (including per-unit rates
+ * from getPrices) cannot be shown as a figure.
+ */
+export function describeFigure(call: TraceCall, path: string): { unit: AdviceOutput["figures"][number]["unit"]; label: string } | null {
+  const r = isRecord(call.result) ? call.result : {};
+  const parts = path.split("/").slice(1);
+  if (call.name === "migrationBreakEven" && parts.length === 1) {
+    switch (parts[0]) {
+      case "monthlyFromUsd": return { unit: "per_month", label: `Monthly list cost on ${cloudName(r.from) ?? "the current cloud"}` };
+      case "monthlyToUsd": return { unit: "per_month", label: `Monthly list cost on ${cloudName(r.to) ?? "the new cloud"}` };
+      case "monthlySavingUsd": return { unit: "per_month", label: "Monthly saving from moving" };
+      case "oneTimeUsd": return { unit: "one_time", label: "One-time cost of moving" };
+      case "breakEvenMonths": return { unit: "months", label: "Months to pay it back" };
+    }
+  }
+  if (call.name === "priceScenario" && parts.length === 3 && parts[0] === "clouds" && cloudName(parts[1])) {
+    if (parts[2] === "listUsd") return { unit: "per_month", label: `Monthly list cost on ${cloudName(parts[1])}` };
+    if (parts[2] === "netUsd") return { unit: "per_month", label: `Monthly cost on ${cloudName(parts[1])} after allowances` };
+  }
+  if (call.name === "getFootprint" && parts.length === 2 && parts[0] === "monthlyListUsd" && cloudName(parts[1])) {
+    return { unit: "per_month", label: `Monthly list cost on ${cloudName(parts[1])}` };
+  }
+  return null;
+}
+
+export function checkAdvice(output: AdviceOutput, calls: readonly TraceCall[], opts: { trustedText?: boolean } = {}): { output: AdviceOutput; checks: AdviceChecks } {
   const byId = new Map(calls.map((c) => [c.id, c]));
   const dropped: DroppedFigure[] = [];
   const figures: AdviceOutput["figures"] = [];
+  const seen = new Set<string>();
 
   for (const f of output.figures) {
     const drop = (reason: DroppedFigure["reason"]) => dropped.push({ label: f.label.slice(0, 60), call: f.call, path: f.path.slice(0, 80), reason });
@@ -160,8 +200,17 @@ export function checkAdvice(output: AdviceOutput, calls: readonly TraceCall[]): 
       const actual = resolvePointer(call.result, f.path);
       if (actual === undefined) drop("path_not_found");
       else if (typeof actual !== "number" || !Number.isFinite(actual)) drop("not_a_number");
-      else if (cents(actual) !== cents(f.valueUsd)) drop("mismatch");
-      else figures.push({ ...f, valueUsd: Math.round(actual * 100) / 100 }); // show the tool's number, not the model's
+      else {
+        const meaning = describeFigure(call, f.path);
+        if (!meaning) drop("unsupported_path");
+        else if (cents(actual) !== cents(f.valueUsd)) drop("mismatch");
+        else if (seen.has(`${f.call}${f.path}`)) drop("duplicate");
+        else {
+          seen.add(`${f.call}${f.path}`);
+          // The tool's number, with the unit and label the server derives from the path: not the model's.
+          figures.push({ ...f, valueUsd: Math.round(actual * 100) / 100, unit: meaning.unit, label: meaning.label });
+        }
+      }
     }
   }
 
@@ -183,11 +232,12 @@ export function checkAdvice(output: AdviceOutput, calls: readonly TraceCall[]): 
   const verdictReplaced = recommendation !== output.recommendation || targetCloud !== output.targetCloud;
 
   const allowed = new Set<number>(figures.map((f) => cents(f.valueUsd)));
-  // Thresholds the code itself wrote into reasons ("within 6 months", "$10 a month") are not model numbers.
-  for (const v of verdicts) for (const r of v.reasons) for (const n of numbersIn(r)) allowed.add(cents(n));
-  const keep = appNames(calls);
+  // A verdict's reasons ("within 6 months", "$10 a month") are the code's words: fine verbatim, not as a model's numbers.
+  const keep = [...appNames(calls), ...verdicts.flatMap((v) => v.reasons)];
   let strippedNumbers = 0;
   const clean = (t: string) => {
+    // A demo answer is written by code from the real results (never by a model), so its text is not stripped.
+    if (opts.trustedText) return t;
     const r = stripNumbers(t, allowed, keep);
     strippedNumbers += r.removed;
     return r.text;
@@ -196,7 +246,7 @@ export function checkAdvice(output: AdviceOutput, calls: readonly TraceCall[]): 
   const explanation = clean(output.explanation);
   const modelCaveats = output.caveats.map(clean).filter(Boolean);
   const caveats = [...new Set([...trustedCaveats, ...modelCaveats])].map((c) => c.slice(0, 160)).slice(0, 4);
-  const labelled = figures.map((f) => ({ ...f, label: clean(f.label) || "Figure" }));
+  const labelled = figures; // labels are server-written
 
   const checks: AdviceChecks = { droppedFigures: dropped, strippedNumbers, verdictCall: verdict?.call ?? null, verdictReplaced, fixedAnswer: false };
   if (labelled.length === 0 && !verdict) {

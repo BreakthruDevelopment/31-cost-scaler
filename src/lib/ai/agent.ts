@@ -85,7 +85,8 @@ export type AgentDeps = { innerLlm?: Adk.BaseLlm };
 // Recording tools
 // ---------------------------------------------------------------------------
 
-type Recorder = { calls: AgentCall[] };
+/** `liveResponses`: model replies that came back (a live call cost something, even if its answer was unusable). */
+type Recorder = { calls: AgentCall[]; liveResponses?: number };
 
 function plain(value: unknown): unknown {
   return value === undefined ? null : JSON.parse(JSON.stringify(value));
@@ -121,12 +122,29 @@ export function recordTools(tools: AnyToolDef[], rec: Recorder): AnyToolDef[] {
 // ADK
 // ---------------------------------------------------------------------------
 
+/** ADK could not be loaded (a missing or broken install): logged apart from a provider error. */
+export class AdkImportError extends Error {
+  constructor() {
+    super("ADK could not be loaded");
+    this.name = "AdkImportError";
+  }
+}
+
+let adkQuieted = false;
+/** ADK prints its own console lines (INFO per model request). Route warnings and errors through `log` as a code only. */
+function quietAdk(adk: typeof Adk) {
+  if (adkQuieted) return;
+  adkQuieted = true;
+  const forward = (level: string) => () => log.warn("ai.adk.log", { level });
+  adk.setLogger({ log: () => undefined, debug: () => undefined, info: () => undefined, warn: forward("warn"), error: forward("error"), setLogLevel: () => undefined });
+}
+
 function timeoutError(): AiError {
   return new AiError("The agent ran out of time", "tool_loop", "timeout");
 }
 
 /** `GatewayLlm`: ADK's model, behind a call budget and a deadline. Built after the import, so it can extend `BaseLlm`. */
-function makeGatewayLlm(adk: typeof Adk, inner: Adk.BaseLlm, opts: { maxCalls: number; signal: AbortSignal }) {
+function makeGatewayLlm(adk: typeof Adk, inner: Adk.BaseLlm, opts: { maxCalls: number; signal: AbortSignal; onResponse: () => void }) {
   class GatewayLlm extends adk.BaseLlm {
     calls = 0;
     constructor() {
@@ -137,7 +155,10 @@ function makeGatewayLlm(adk: typeof Adk, inner: Adk.BaseLlm, opts: { maxCalls: n
       if (this.calls >= opts.maxCalls) throw new AiError("The agent used its model-call budget", "tool_loop");
       this.calls++;
       // No streaming: the final answer is parsed whole. Our signal replaces ADK's so the deadline always applies.
-      yield* inner.generateContentAsync(request, false, opts.signal);
+      for await (const response of inner.generateContentAsync(request, false, opts.signal)) {
+        opts.onResponse();
+        yield response;
+      }
     }
     async connect(): Promise<never> {
       throw new AiError("Live connections are not used", "input_rejected");
@@ -153,6 +174,7 @@ function errorStatus(err: unknown): number | undefined {
 
 /** What went wrong, as a short code that is safe to log and show. */
 export function failureKind(err: unknown): string {
+  if (err instanceof AdkImportError) return "adk_import";
   if (err instanceof AiError) return err.kind;
   if (errorStatus(err) === 429) return "quota";
   return "provider";
@@ -185,7 +207,13 @@ async function runAdk<T>(
   softDeadlineAt: number,
   deps: AgentDeps,
 ): Promise<{ data: T; model: string; llmCalls: number }> {
-  const adk = await import("@google/adk");
+  let adk: typeof Adk;
+  try {
+    adk = await import("@google/adk");
+  } catch {
+    throw new AdkImportError();
+  }
+  quietAdk(adk);
   const e = env();
   const model = e.AI_MODEL ?? DEFAULT_MODELS.gemini;
   const maxLlmCalls = req.maxLlmCalls ?? AGENT_MAX_LLM_CALLS;
@@ -193,7 +221,7 @@ async function runAdk<T>(
   const timer = setTimeout(() => controller.abort(), Math.max(1, softDeadlineAt - Date.now()));
   try {
     const inner = deps.innerLlm ?? new adk.Gemini({ apiKey: e.GEMINI_API_KEY ?? "", model });
-    const llm = makeGatewayLlm(adk, inner, { maxCalls: maxLlmCalls, signal: controller.signal });
+    const llm = makeGatewayLlm(adk, inner, { maxCalls: maxLlmCalls, signal: controller.signal, onResponse: () => (rec.liveResponses = (rec.liveResponses ?? 0) + 1) });
     const thinking = geminiThinkingConfig(model);
     const tools = recordTools(req.tools, rec).map(
       (tool) =>
@@ -283,6 +311,8 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
   const limits = req.limits;
   let rateTaken = false;
   let dailyTaken = false;
+  // A live model call answered (even uselessly): it cost the day's budget, so that charge is kept.
+  let liveSpent = false;
   let forceDemo = false;
   if (limits) {
     await db().transaction((tx) => consumeRate(tx, limits.userId, limits.rate.kind, limits.rate.limit, limits.rate.message, { windowSeconds: limits.rate.windowSeconds }));
@@ -335,7 +365,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
       prepared: prepareTools(wrapped, req.schema),
     };
     const data = await runDemoToolLoop(loop, trace);
-    await releaseDailyOnce(); // a demo answer costs nothing, so it does not use the day's budget
+    if (!liveSpent) await releaseDailyOnce(); // a pure demo answer costs nothing, so it does not use the day's budget
     return done(data, "demo", "demo", "recorded", trace.steps, fallbackReason);
   };
 
@@ -352,7 +382,8 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
       } catch (err) {
         if (err instanceof AiError && err.kind === "input_rejected") throw err;
         fallbackReason = failureKind(err);
-        log.warn("ai.agent.adk_failed", { task: req.task, kind: fallbackReason, status: err instanceof AiError ? err.status : errorStatus(err) });
+        if ((attempt.liveResponses ?? 0) > 0) liveSpent = true;
+        log.warn(err instanceof AdkImportError ? "ai.agent.adk_import_failed" : "ai.agent.adk_failed", { task: req.task, kind: fallbackReason, status: err instanceof AiError ? err.status : errorStatus(err) });
       }
     }
 
@@ -372,15 +403,16 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
           maxOutputTokens: req.maxOutputTokens ?? 1200,
           demoContext: req.demoContext,
         });
-        rec = attempt;
         if (result.demo) {
-          // generate() answered from the demo script after a provider failure; the calls recorded are the real tools'.
-          await releaseDailyOnce();
-          return done(result.data, "demo", "demo", "recorded", 0, fallbackReason ?? "provider");
+          // generate() fell back to its demo script after a provider failure. Drop this attempt's calls (they are the
+          // demo's, mixed with nothing live) and run the demo once, cleanly, so the trace is exactly one run.
+          return await demoRun(fallbackReason ?? "provider");
         }
+        rec = attempt;
         return done(result.data, "generate", result.provider, result.model, 0, fallbackReason);
       } catch (err) {
         if (err instanceof AiError && err.kind === "input_rejected") throw err;
+        if (err instanceof AiError && (err.kind === "invalid_output" || err.kind === "tool_loop")) liveSpent = true; // the model answered
         fallbackReason = fallbackReason ?? failureKind(err);
         log.warn("ai.agent.generate_failed", { task: req.task, kind: failureKind(err) });
       }
@@ -390,7 +422,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
     throw new AiError(fallbackReason === "quota" ? "Model quota reached" : "The advisor could not answer", fallbackReason === "quota" ? "quota" : "provider");
   } catch (err) {
     // Nothing was delivered: give back the attempt and the day's budget.
-    await releaseDailyOnce().catch(() => undefined);
+    if (!liveSpent) await releaseDailyOnce().catch(() => undefined);
     if (limits && rateTaken) await db().transaction((tx) => releaseRate(tx, limits.userId, limits.rate.kind)).catch(() => undefined);
     throw err;
   }

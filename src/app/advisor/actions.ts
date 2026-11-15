@@ -15,7 +15,8 @@ export type AskAdviceState = { ok: true; advice: AdviceView } | { ok: false; err
 export async function askAdviceAction(input: unknown): Promise<AskAdviceState> {
   try {
     const user = await requireUser();
-    const row = await askAdvisor(user, input);
+    // The page keeps one `clientOpId` per question with `opFor` (src/lib/client-op.ts) until the server answers.
+    const { advice: row } = await askAdvisor(user, input);
     revalidatePath("/advisor");
     return { ok: true, advice: { id: row.id, output: row.output as AdviceView["output"], demo: row.demo, createdAt: row.createdAt.toISOString() } };
   } catch (err) {
