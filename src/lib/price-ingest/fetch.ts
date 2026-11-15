@@ -127,21 +127,23 @@ export function createPriceFetcher(deps: PriceFetchDeps = {}) {
             return;
           }
           const encoding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
-          let decoder: Readable;
-          if (encoding === "" || encoding === "identity") decoder = res;
-          else if (encoding === "gzip" || encoding === "x-gzip") decoder = res.pipe(zlib.createGunzip());
-          else if (encoding === "br") decoder = res.pipe(zlib.createBrotliDecompress());
-          else {
+          if (!["", "identity", "gzip", "x-gzip", "br"].includes(encoding)) {
             res.resume();
             fail(new PriceFetchError("bad_encoding"));
             return;
           }
+          // The declared length is checked BEFORE any decoder exists: a decoder piped from a response that is then
+          // destroyed would emit an unhandled truncation error.
           const declared = Number(res.headers["content-length"]);
           if (Number.isFinite(declared) && declared > opts.maxBytes) {
             res.resume();
             fail(new PriceFetchError("too_large"));
             return;
           }
+          let decoder: Readable;
+          if (encoding === "" || encoding === "identity") decoder = res;
+          else if (encoding === "br") decoder = res.pipe(zlib.createBrotliDecompress());
+          else decoder = res.pipe(zlib.createGunzip());
           let wire = 0;
           let decoded = 0;
           const counter = new Transform({

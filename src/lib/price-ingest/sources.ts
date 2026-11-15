@@ -81,8 +81,17 @@ async function awsGroup(group: string, maxBytes: number, ctx: CollectContext): P
   return { ...parsed, bytes: res.bytes() };
 }
 
-/** Virtual Machines lists thousands of sizes; only the two reference sizes are read (see REFERENCE_SIZES in sku-map). */
-const AZURE_NARROW: Record<string, string> = { "Virtual Machines": " and (armSkuName eq 'Standard_D2s_v5' or armSkuName eq 'Standard_D4s_v5')" };
+/**
+ * Narrow the big Azure services in the query itself, so the response stays small: Virtual Machines lists thousands of
+ * sizes (only the two reference sizes are read, see REFERENCE_SIZES in sku-map), Storage hundreds of products (only
+ * Blob v2), and PostgreSQL only the compute and storage products the map reads. Values are case-sensitive.
+ */
+const AZURE_NARROW: Record<string, string> = {
+  "Virtual Machines": " and (armSkuName eq 'Standard_D2s_v5' or armSkuName eq 'Standard_D4s_v5')",
+  Storage: " and productName eq 'General Block Blob v2'",
+  "Azure Database for PostgreSQL":
+    " and (productName eq 'Azure Database for PostgreSQL Flexible Server General Purpose Ddsv5 Series Compute' or productName eq 'Azure Database for PostgreSQL Flexible Server Burstable BS Series Compute' or productName eq 'Azure Database for PostgreSQL Flexible Server Storage')",
+};
 
 async function azureGroup(group: string, ctx: CollectContext): Promise<GroupResult> {
   const filter = `armRegionName eq 'eastus' and priceType eq 'Consumption' and serviceName eq '${group.replace(/'/g, "''")}'${AZURE_NARROW[group] ?? ""}`;

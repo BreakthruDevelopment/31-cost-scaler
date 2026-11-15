@@ -125,6 +125,40 @@
      ]
     }
    ]
+  },
+  {
+   "partNumber": "B93297",
+   "displayName": "Compute - Ampere A1 - OCPU",
+   "metricName": "OCPU Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.01
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "partNumber": "B93298",
+   "displayName": "Compute - Ampere A1 - Memory",
+   "metricName": "Gigabyte Per Hour",
+   "serviceCategory": "Compute",
+   "currencyCodeLocalizations": [
+    {
+     "currencyCode": "USD",
+     "prices": [
+      {
+       "model": "PAY_AS_YOU_GO",
+       "value": 0.0015
+      }
+     ]
+    }
+   ]
   }
  ]
 }

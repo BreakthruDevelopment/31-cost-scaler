@@ -8,7 +8,7 @@ import { FREE_TIERS } from "./free-tiers";
 import { decimalToPico, nanosToPico, picoToMicros, scale } from "./money";
 import { SANITY_BOUNDS, inBounds, normalize } from "./normalize";
 import { parseAwsCsv, parseAzureItems, parseGcpSkus, parseOciItems } from "./parsers";
-import { AWS_NEEDLES, OCI_PART_NUMBERS, REFERENCE_SIZES, REQUIRED_KEYS, RULES, SOURCE_CLOUD, SOURCE_GROUPS } from "./sku-map";
+import { AWS_NEEDLES, MICRO_KEYS, OCI_PART_NUMBERS, REFERENCE_SIZES, REQUIRED_KEYS, RULES, SOURCE_CLOUD, SOURCE_GROUPS } from "./sku-map";
 import { collectSource } from "./sources";
 import { bearerMatches } from "./token";
 import type { NormalizedRow, NotListed, PriceSourceId, RawPrice } from "./types";
@@ -156,21 +156,21 @@ describe("sku-map", () => {
   const EXPECTED: Record<string, number | "not_listed"> = {
     "aws vm.2vcpu-8gb": 96_000, "aws vm.4vcpu-16gb": 192_000, "aws vm.vcpu": 48_000, "aws vm.gb": 12_000,
     "aws serverless.vcpu": 40_480, "aws serverless.gb": 4_445, "aws serverless.requests": "not_listed", "aws serverless.lambda.gb": 60_000, "aws serverless.lambda.gb.arm64": 48_000, "aws serverless.lambda.requests": 200_000,
-    "aws postgres.2vcpu-8gb": 178_000, "aws postgres.4vcpu-16gb": 356_000, "aws postgres.2vcpu-8gb.ha": 356_000, "aws postgres.4vcpu-16gb.ha": 712_000, "aws postgres.storage": 115_000, "aws postgres.storage.ha": 230_000,
+    "aws postgres.2vcpu-8gb": 178_000, "aws postgres.2vcpu-1gb": 18_000, "aws postgres.4vcpu-16gb": 356_000, "aws postgres.2vcpu-8gb.ha": 356_000, "aws postgres.4vcpu-16gb.ha": 712_000, "aws postgres.storage": 115_000, "aws postgres.storage.ha": 230_000,
     "aws object_storage.gb": 23_000, "aws egress.gb": 90_000, "aws identity.mau": 5_500,
     "aws load_balancer.hour": 22_500, "aws load_balancer.data": "not_listed", "aws load_balancer.capacity": 8_000,
     "azure vm.2vcpu-8gb": 96_000, "azure vm.4vcpu-16gb": 192_000, "azure vm.vcpu": 48_000, "azure vm.gb": 12_000,
     "azure serverless.vcpu": 86_400, "azure serverless.gb": 10_800, "azure serverless.requests": 400_000,
-    "azure postgres.vcpu": 124_000, "azure postgres.2vcpu-8gb": 248_000, "azure postgres.4vcpu-16gb": 496_000, "azure postgres.2vcpu-8gb.ha": "not_listed", "azure postgres.4vcpu-16gb.ha": "not_listed", "azure postgres.storage": 115_000, "azure postgres.storage.ha": "not_listed",
+    "azure postgres.vcpu": 124_000, "azure postgres.1vcpu-2gb": 26_000, "azure postgres.2vcpu-8gb": 248_000, "azure postgres.4vcpu-16gb": 496_000, "azure postgres.2vcpu-8gb.ha": "not_listed", "azure postgres.4vcpu-16gb.ha": "not_listed", "azure postgres.storage": 115_000, "azure postgres.storage.ha": "not_listed",
     "azure object_storage.gb": 18_400, "azure egress.gb": 87_000, "azure identity.mau": 3_250,
     "azure load_balancer.hour": 246_000, "azure load_balancer.data": "not_listed", "azure load_balancer.capacity": 8_000,
-    "gcp vm.vcpu": 21_811, "gcp vm.gb": 2_923, "gcp vm.2vcpu-8gb": 67_006, "gcp vm.4vcpu-16gb": 134_012,
+    "gcp vm.vcpu": 21_811, "gcp vm.gb": 2_923, "gcp vm.2vcpu-1gb": 8_400, "gcp vm.2vcpu-8gb": 67_006, "gcp vm.4vcpu-16gb": 134_012,
     "gcp serverless.vcpu": 86_400, "gcp serverless.gb": 9_000, "gcp serverless.requests": 400_000,
     "gcp postgres.vcpu": 41_300, "gcp postgres.gb": 7_000, "gcp postgres.vcpu.ha": 82_600, "gcp postgres.gb.ha": 14_000,
     "gcp postgres.2vcpu-8gb": 138_600, "gcp postgres.4vcpu-16gb": 277_200, "gcp postgres.2vcpu-8gb.ha": 277_200, "gcp postgres.4vcpu-16gb.ha": 554_400, "gcp postgres.storage": 170_000, "gcp postgres.storage.ha": 340_000,
     "gcp object_storage.gb": 20_000, "gcp egress.gb": 120_000, "gcp identity.mau": 5_500,
     "gcp load_balancer.hour": 25_000, "gcp load_balancer.data": 8_000, "gcp load_balancer.capacity": "not_listed",
-    "oci vm.vcpu": 12_500, "oci vm.gb": 1_500, "oci vm.2vcpu-8gb": 37_000, "oci vm.4vcpu-16gb": 74_000,
+    "oci vm.a1.ocpu": 10_000, "oci vm.a1.gb": 1_500, "oci vm.vcpu": 12_500, "oci vm.gb": 1_500, "oci vm.2vcpu-8gb": 37_000, "oci vm.4vcpu-16gb": 74_000,
     "oci serverless.vcpu": 12_500, "oci serverless.gb": 1_500, "oci serverless.requests": "not_listed",
     "oci postgres.2vcpu-8gb": "not_listed", "oci postgres.4vcpu-16gb": "not_listed", "oci postgres.2vcpu-8gb.ha": "not_listed", "oci postgres.4vcpu-16gb.ha": "not_listed", "oci postgres.storage": "not_listed", "oci postgres.storage.ha": "not_listed",
     "oci object_storage.gb": 25_500, "oci egress.gb": 8_500, "oci identity.mau": "not_listed",
@@ -225,6 +225,19 @@ describe("sku-map", () => {
       if (r.kind === "sum") for (const p of r.parts) expect(seen.has(`${r.cloud} ${p.key}`), `${id} needs ${p.key} first`).toBe(true);
       seen.add(id);
     }
+  });
+
+  it("the micro sizes the pricing engine needs each have a rule, a row from the fixtures and a distinct key", async () => {
+    const all = new Set<string>();
+    for (const [cloud, keys] of Object.entries(MICRO_KEYS)) {
+      for (const key of keys) {
+        expect(RULES.some((r) => r.cloud === cloud && r.key === key), `${cloud} ${key}`).toBe(true);
+        expect(all.has(`${cloud} ${key}`)).toBe(false);
+        all.add(`${cloud} ${key}`);
+      }
+    }
+    const rows = (await Promise.all(SOURCES.map((s) => resultFor(s)))).flatMap((r) => r.rows);
+    for (const id of all) expect(rows.some((r) => `${r.cloud} ${r.skuKey}` === id), id).toBe(true);
   });
 
   it("reference sizes are one set shared by every cloud", () => {
@@ -333,6 +346,13 @@ describe("collecting a source", () => {
       expect(r.url).not.toContain("key=");
       expect(r.apiKey !== undefined).toBe(new URL(r.url).host === "cloudbilling.googleapis.com");
     }
+  });
+  it("the large Azure services are narrowed in the query (VMs by size, Storage and PostgreSQL by product)", async () => {
+    const filters = (await run("azure")).requests.map((r) => new URL(r.url).searchParams.get("$filter") ?? "");
+    const of = (service: string) => filters.find((f) => f.includes(`serviceName eq '${service}'`)) ?? "";
+    expect(of("Virtual Machines")).toContain("armSkuName eq 'Standard_D2s_v5'");
+    expect(of("Storage")).toContain("productName eq 'General Block Blob v2'");
+    expect(of("Azure Database for PostgreSQL")).toContain("Burstable BS Series Compute");
   });
   it("follows Azure pages, and a failed group is isolated: the others still land", async () => {
     const { got, requests, rows } = await run("azure", { azurePageSize: 2 });

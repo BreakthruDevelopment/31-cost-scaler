@@ -1,7 +1,8 @@
 /**
- * Money, exactly. Vendor prices are decimal strings or tiny floats ("0.0000166667" per GB-second; JSON numbers are formatted to 13 decimals, never parsed from exponent notation); floating point
+ * Money, exactly. Vendor prices are decimal strings or tiny numbers ("0.0000166667" per GB-second); floating point
  * would drift. A price is held as integer PICO-dollars (1e-12 USD) while it is parsed and scaled, and rounded once,
- * half up, to integer micro-dollars (1e-6 USD) when it is stored.
+ * half up, to integer micro-dollars (1e-6 USD) when it is stored. A JSON number is turned into text with 13 decimals
+ * (`toFixed`, never exponent notation) and then parsed as a decimal string, so it never goes through float arithmetic.
  */
 export type Pico = bigint;
 

@@ -121,6 +121,23 @@ describe("requests and responses", () => {
     expect(await code(readText(res))).toBe("too_large");
   });
 
+  it.each(["gzip", "br"])("a %s body whose declared length is over the cap fails cleanly: no decoder is left to crash the process", async (enc) => {
+    const body = (enc === "gzip" ? zlib.gzipSync : zlib.brotliCompressSync)(Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 7919) % 251)));
+    const stray: unknown[] = [];
+    const onStray = (e: unknown) => stray.push(e);
+    process.on("uncaughtException", onStray);
+    process.on("unhandledRejection", onStray);
+    try {
+      handler = (_q, res) => { res.setHeader("content-encoding", enc); res.setHeader("content-length", String(body.length)); res.write(body.subarray(0, 500)); setTimeout(() => res.end(body.subarray(500)), 30); };
+      expect(await code(fetcher()({ url: AZURE, maxBytes: 200, signal: live() }))).toBe("too_large");
+      await new Promise((r) => setTimeout(r, 150));
+      expect(stray).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onStray);
+      process.off("unhandledRejection", onStray);
+    }
+  });
+
   it("the cap applies after decompression too: a small gzip body that inflates past it is cut off", async () => {
     const bomb = zlib.gzipSync(Buffer.alloc(5_000_000, 97));
     expect(bomb.length).toBeLessThan(10_000);

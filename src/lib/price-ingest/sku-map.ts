@@ -69,6 +69,17 @@ export const REFERENCE_SIZES = [
 ] as const;
 
 /** Every key that must exist on every cloud, as a row or as an explicit `absent` rule. A test enforces it. */
+/**
+ * Small sizes the pricing engine needs for the portfolio's own footprint (not required on every cloud: each is the one
+ * size that cloud's stack actually runs). Each has a rule and a test row.
+ */
+export const MICRO_KEYS = {
+  aws: ["postgres.2vcpu-1gb"],
+  azure: ["postgres.1vcpu-2gb"],
+  gcp: ["vm.2vcpu-1gb"],
+  oci: ["vm.a1.ocpu", "vm.a1.gb"],
+} as const;
+
 export const REQUIRED_KEYS: Record<Component, readonly string[]> = {
   vm: ["vm.2vcpu-8gb", "vm.4vcpu-16gb", "vm.vcpu", "vm.gb"],
   serverless: ["serverless.vcpu", "serverless.gb", "serverless.requests"],
@@ -110,6 +121,7 @@ const aws: Rule[] = [
 
   { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.2vcpu-8gb", unit: "hour", group: "AmazonRDS", description: "RDS PostgreSQL db.m6g.large, Single-AZ", match: rds("db.m6g.large", "Single-AZ") },
   { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.4vcpu-16gb", unit: "hour", group: "AmazonRDS", description: "RDS PostgreSQL db.m6g.xlarge, Single-AZ", match: rds("db.m6g.xlarge", "Single-AZ") },
+  { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.2vcpu-1gb", unit: "hour", group: "AmazonRDS", description: "RDS PostgreSQL db.t4g.micro (2 vCPU, 1 GB), Single-AZ: the portfolio's shared database size", match: rds("db.t4g.micro", "Single-AZ") },
   { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.2vcpu-8gb.ha", unit: "hour", group: "AmazonRDS", description: "RDS PostgreSQL db.m6g.large, Multi-AZ", match: rds("db.m6g.large", "Multi-AZ") },
   { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.4vcpu-16gb.ha", unit: "hour", group: "AmazonRDS", description: "RDS PostgreSQL db.m6g.xlarge, Multi-AZ", match: rds("db.m6g.xlarge", "Multi-AZ") },
   { kind: "direct", cloud: "aws", component: "postgres", key: "postgres.storage", unit: "gb_month", group: "AmazonRDS", description: "RDS gp3 storage, Single-AZ", match: rdsStorage("Single-AZ") },
@@ -129,6 +141,7 @@ const aws: Rule[] = [
 const az = (service: string, fields: Record<string, string | RegExp>) => (r: RawPrice) =>
   a(r).serviceName === service && Object.entries(fields).every(([k, v]) => (typeof v === "string" ? a(r)[k] === v : v.test(a(r)[k] ?? "")));
 const azVm = (arm: string) => az("Virtual Machines", { armSkuName: arm, productName: "Virtual Machines DSv5 Series", skuName: /^(?!.*(Spot|Low Priority))/, unitOfMeasure: "1 Hour" });
+const PG_BURSTABLE = "Azure Database for PostgreSQL Flexible Server Burstable BS Series Compute";
 const PG_COMPUTE = "Azure Database for PostgreSQL Flexible Server General Purpose Ddsv5 Series Compute";
 
 const azure: Rule[] = [
@@ -146,6 +159,7 @@ const azure: Rule[] = [
   { kind: "sum", cloud: "azure", component: "postgres", key: "postgres.4vcpu-16gb", unit: "hour", groups: ["Azure Database for PostgreSQL"], description: "Derived: 4 vCores", parts: [{ key: "postgres.vcpu", mul: 4n }] },
   { kind: "absent", cloud: "azure", component: "postgres", key: "postgres.2vcpu-8gb.ha", reason: "No separate HA rate used; the engine applies 2x the instance price" },
   { kind: "absent", cloud: "azure", component: "postgres", key: "postgres.4vcpu-16gb.ha", reason: "No separate HA rate used; the engine applies 2x the instance price" },
+  { kind: "direct", cloud: "azure", component: "postgres", key: "postgres.1vcpu-2gb", unit: "hour", group: "Azure Database for PostgreSQL", description: "Flexible Server Burstable B1ms (1 vCore, 2 GB): the portfolio's shared database size", match: az("Azure Database for PostgreSQL", { productName: PG_BURSTABLE, skuName: /^(Standard_)?B1ms$/, unitOfMeasure: "1 Hour" }) },
   { kind: "direct", cloud: "azure", component: "postgres", key: "postgres.storage", unit: "gb_month", group: "Azure Database for PostgreSQL", description: "Flexible Server storage", match: az("Azure Database for PostgreSQL", { productName: "Azure Database for PostgreSQL Flexible Server Storage", meterName: "Storage Data Stored", unitOfMeasure: "1 GB/Month" }) },
   { kind: "absent", cloud: "azure", component: "postgres", key: "postgres.storage.ha", reason: "No separate HA storage rate used; the engine applies 2x" },
 
@@ -167,6 +181,7 @@ const gcp: Rule[] = [
   { kind: "direct", cloud: "gcp", component: "vm", key: "vm.vcpu", unit: "vcpu_hour", group: "Compute Engine", description: "Compute Engine E2 core, on-demand", match: gc("Compute Engine", /^E2 Instance Core running in Americas$/) },
   { kind: "direct", cloud: "gcp", component: "vm", key: "vm.gb", unit: "gb_hour", group: "Compute Engine", description: "Compute Engine E2 RAM, on-demand", match: gc("Compute Engine", /^E2 Instance Ram running in Americas$/) },
   { kind: "sum", cloud: "gcp", component: "vm", key: "vm.2vcpu-8gb", unit: "hour", groups: ["Compute Engine"], description: "Derived: e2-standard-2 = 2 cores + 8 GB RAM", parts: [{ key: "vm.vcpu", mul: 2n }, { key: "vm.gb", mul: 8n }] },
+  { kind: "direct", cloud: "gcp", component: "vm", key: "vm.2vcpu-1gb", unit: "hour", group: "Compute Engine", description: "Compute Engine e2-micro (2 shared vCPUs, 1 GB), on-demand: the portfolio's shared VM size", match: gc("Compute Engine", /^E2 Micro Instance running in Americas$/) },
   { kind: "sum", cloud: "gcp", component: "vm", key: "vm.4vcpu-16gb", unit: "hour", groups: ["Compute Engine"], description: "Derived: e2-standard-4 = 4 cores + 16 GB RAM", parts: [{ key: "vm.vcpu", mul: 4n }, { key: "vm.gb", mul: 16n }] },
 
   { kind: "direct", cloud: "gcp", component: "serverless", key: "serverless.vcpu", unit: "vcpu_hour", group: "Cloud Run", description: "Cloud Run CPU, request-based billing, per hour (list price is per second)", ...per.second, match: gc("Cloud Run", /^Services CPU \(Request-based billing\) in us-central1$|^CPU Allocation Time \(requests?-based\)/i) },
@@ -204,6 +219,9 @@ const oci: Rule[] = [
   { kind: "sum", cloud: "oci", component: "vm", key: "vm.2vcpu-8gb", unit: "hour", groups: ["oci"], description: "Derived: 2 vCPUs + 8 GB", parts: [{ key: "vm.vcpu", mul: 2n }, { key: "vm.gb", mul: 8n }] },
   { kind: "sum", cloud: "oci", component: "vm", key: "vm.4vcpu-16gb", unit: "hour", groups: ["oci"], description: "Derived: 4 vCPUs + 16 GB", parts: [{ key: "vm.vcpu", mul: 4n }, { key: "vm.gb", mul: 16n }] },
 
+  { kind: "direct", cloud: "oci", component: "vm", key: "vm.a1.ocpu", unit: "vcpu_hour", group: "oci", description: "Ampere A1 Flex, per OCPU-hour (one A1 OCPU is one core); B93297", match: oci_("B93297") },
+  { kind: "direct", cloud: "oci", component: "vm", key: "vm.a1.gb", unit: "gb_hour", group: "oci", description: "Ampere A1 Flex memory, per GB-hour; B93298", match: oci_("B93298") },
+
   { kind: "sum", cloud: "oci", component: "serverless", key: "serverless.vcpu", unit: "vcpu_hour", groups: ["oci"], description: "Container Instances are billed at the flex-shape vCPU rate (B93113 / 2)", parts: [{ key: "vm.vcpu", mul: 1n }] },
   { kind: "sum", cloud: "oci", component: "serverless", key: "serverless.gb", unit: "gb_hour", groups: ["oci"], description: "Container Instances are billed at the flex-shape memory rate (B93114)", parts: [{ key: "vm.gb", mul: 1n }] },
   { kind: "absent", cloud: "oci", component: "serverless", key: "serverless.requests", reason: "Container Instances have no per-request price" },
@@ -222,12 +240,12 @@ const oci: Rule[] = [
 export const RULES: readonly Rule[] = [...aws, ...azure, ...gcp, ...oci];
 
 /** The part numbers the Oracle parser keeps (every `oci_("...")` above). */
-export const OCI_PART_NUMBERS: ReadonlySet<string> = new Set(["B93113", "B93114", "B91628", "B88327", "B93030"]);
+export const OCI_PART_NUMBERS: ReadonlySet<string> = new Set(["B93113", "B93114", "B93297", "B93298", "B91628", "B88327", "B93030"]);
 
 /** Substrings an AWS CSV line must contain to be parsed at all, per service file. */
 export const AWS_NEEDLES: Record<string, readonly string[]> = {
   AmazonEC2: ["m6i.large", "m6i.xlarge"],
-  AmazonRDS: ["db.m6g.large", "db.m6g.xlarge", "Database Storage"],
+  AmazonRDS: ["db.m6g.large", "db.m6g.xlarge", "db.t4g.micro", "Database Storage"],
   AWSLambda: ["AWS-Lambda-Duration", "AWS-Lambda-Requests"],
   AmazonECS: ["Fargate-vCPU-Hours", "Fargate-GB-Hours"],
   AmazonS3: ["TimedStorage-ByteHrs"],
