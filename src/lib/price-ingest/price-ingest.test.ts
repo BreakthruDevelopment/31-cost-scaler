@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { csvRecords, lines, parseCsvLine } from "./csv";
 import { PriceFetchError } from "./fetch";
 import { createFixtureFetcher } from "./fixture-fetcher";
-import { FREE_TIERS } from "./free-tiers";
+import { FREE_TIERS } from "../pricing/free-tiers";
 import { decimalToPico, nanosToPico, picoToMicros, scale } from "./money";
 import { SANITY_BOUNDS, inBounds, normalize } from "./normalize";
 import { parseAwsCsv, parseAzureItems, parseGcpSkus, parseOciItems } from "./parsers";
