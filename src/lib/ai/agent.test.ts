@@ -166,6 +166,18 @@ describe("runAgent falls back to generate({ tools })", () => {
     spies.forEach((s) => s.mockRestore());
   });
 
+  it("a provider that hangs to the deadline still gets the demo answer, from a fresh window, not an error", async () => {
+    live();
+    vi.stubGlobal("fetch", vi.fn((_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("t"), { name: "TimeoutError" })), { once: true })),
+    ));
+    const started = Date.now();
+    const result = await runAgent({ ...scalingRequest(), deadlineMs: 6000 }, { innerLlm: new FailingLlm() });
+    expect(result.engine).toBe("demo");
+    expect(result.calls.map((c) => c.error)).toEqual([null, null, null]);
+    expect(Date.now() - started).toBeLessThan(6500);
+  });
+
   it("throws when both engines fail and demo fallback is off", async () => {
     live({ AI_FALLBACK_TO_DEMO: "false" });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));

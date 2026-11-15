@@ -35,6 +35,8 @@ export const AGENT_MAX_TOOL_CALLS = 9;
 /** Recorded results are capped a little under what a tool loop passes on. */
 const RESULT_CAP = MAX_TOOL_RESULT_CHARS - 48;
 const MIN_FALLBACK_MS = 1_500;
+/** The demo script always gets its own fresh window (its tools read the database), after the live attempts end. */
+export const AGENT_DEMO_WINDOW_MS = 4_000;
 
 export type AgentCall = { id: string; name: string; args: unknown; result: unknown; error: string | null };
 
@@ -352,6 +354,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
   const demoRun = async (fallbackReason: string | null) => {
     rec = { calls: [] };
     const wrapped = recordTools(req.tools, rec);
+    const demoDeadlineAt = Date.now() + AGENT_DEMO_WINDOW_MS;
     const loop: ToolLoopRequest<T> = {
       task: req.task,
       system: req.system,
@@ -359,7 +362,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
       maxOutputTokens: req.maxOutputTokens ?? 1200,
       tools: wrapped,
       maxSteps: Math.min(maxLlmCalls, 6),
-      deadlineAt,
+      deadlineAt: demoDeadlineAt,
       history: [{ role: "user", text: message }],
       demoContext: req.demoContext,
       prepared: prepareTools(wrapped, req.schema),
@@ -388,7 +391,8 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
     }
 
     // The same tools through generate({ tools }). Quota is skipped: the same key would fail the same way.
-    const remaining = deadlineAt - Date.now();
+    // The live attempts end AGENT_DEMO_WINDOW_MS before the overall deadline, which the demo script keeps for itself.
+    const remaining = deadlineAt - AGENT_DEMO_WINDOW_MS - Date.now();
     if (fallbackReason !== "quota" && (fallbackReason === null || remaining >= MIN_FALLBACK_MS)) {
       const attempt: Recorder = { calls: [] };
       try {
