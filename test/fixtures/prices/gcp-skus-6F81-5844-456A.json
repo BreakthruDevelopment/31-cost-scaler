@@ -178,42 +178,6 @@
           "effectiveTime": "2026-11-01T00:00:00Z"
         }
       ]
-    },
-    {
-      "name": "services/x/skus/S0099",
-      "skuId": "S0099-SYN",
-      "description": "E2 Micro Instance running in Americas",
-      "category": {
-        "serviceDisplayName": "Compute Engine",
-        "resourceFamily": "Compute",
-        "resourceGroup": "X",
-        "usageType": "OnDemand"
-      },
-      "serviceRegions": [
-        "us-central1",
-        "us-east1"
-      ],
-      "pricingInfo": [
-        {
-          "summary": "",
-          "pricingExpression": {
-            "usageUnit": "h",
-            "displayQuantity": 1,
-            "tieredRates": [
-              {
-                "startUsageAmount": 0,
-                "unitPrice": {
-                  "currencyCode": "USD",
-                  "units": "0",
-                  "nanos": 8400000
-                }
-              }
-            ]
-          },
-          "currencyConversionRate": 1,
-          "effectiveTime": "2026-11-01T00:00:00Z"
-        }
-      ]
     }
   ],
   "nextPageToken": ""

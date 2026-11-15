@@ -325,6 +325,27 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
     expect(await r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: fetcher } })).toMatchObject({ ran: true, outcome: "ok" });
   });
 
+  it("the lock survives a slow fetch: a second refresh started mid-run is a 409 and only one run is 'running'", async () => {
+    const { fetcher } = createFixtureFetcher();
+    let slowed = false;
+    const slow = (async (req: Parameters<typeof fetcher>[0]) => {
+      if (!slowed) {
+        slowed = true;
+        await new Promise((res) => setTimeout(res, 7000)); // longer than the old 5 s idle timeout on the lock connection
+      }
+      return fetcher(req);
+    }) as typeof fetcher;
+    const first = r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: slow } });
+    await new Promise((res) => setTimeout(res, 6200)); // past the idle timeout the lock connection used to have
+    const { fetcher: quick } = createFixtureFetcher();
+    await expect(r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: quick } })).rejects.toMatchObject({ status: 409 });
+    expect(await sql`select count(*)::int as n from price_refresh where outcome = 'running'`).toEqual([{ n: 1 }]);
+    expect(await sql`select count(*)::int as n from price_refresh where source = 'oci'`).toEqual([{ n: 1 }]);
+    expect(await first).toMatchObject({ ran: true, outcome: "ok" });
+    // finished: the lock is free again
+    expect(await r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: quick } })).toMatchObject({ ran: true });
+  }, 30_000);
+
   it("parallel calls: exactly one runs, the rest get 409", async () => {
     const { fetcher } = createFixtureFetcher();
     const results = await Promise.allSettled([1, 2, 3, 4].map(() => r.runPriceRefresh(SYSTEM, "scheduler", { source: "oci", deps: { fetch: fetcher } })));

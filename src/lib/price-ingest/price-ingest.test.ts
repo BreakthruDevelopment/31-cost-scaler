@@ -164,7 +164,7 @@ describe("sku-map", () => {
     "azure postgres.vcpu": 124_000, "azure postgres.1vcpu-2gb": 26_000, "azure postgres.2vcpu-8gb": 248_000, "azure postgres.4vcpu-16gb": 496_000, "azure postgres.2vcpu-8gb.ha": "not_listed", "azure postgres.4vcpu-16gb.ha": "not_listed", "azure postgres.storage": 115_000, "azure postgres.storage.ha": "not_listed",
     "azure object_storage.gb": 18_400, "azure egress.gb": 87_000, "azure identity.mau": 3_250,
     "azure load_balancer.hour": 246_000, "azure load_balancer.data": "not_listed", "azure load_balancer.capacity": 8_000,
-    "gcp vm.vcpu": 21_811, "gcp vm.gb": 2_923, "gcp vm.2vcpu-1gb": 8_400, "gcp vm.2vcpu-8gb": 67_006, "gcp vm.4vcpu-16gb": 134_012,
+    "gcp vm.vcpu": 21_811, "gcp vm.gb": 2_923, "gcp vm.2vcpu-1gb": 8_376, "gcp vm.2vcpu-8gb": 67_006, "gcp vm.4vcpu-16gb": 134_012,
     "gcp serverless.vcpu": 86_400, "gcp serverless.gb": 9_000, "gcp serverless.requests": 400_000,
     "gcp postgres.vcpu": 41_300, "gcp postgres.gb": 7_000, "gcp postgres.vcpu.ha": 82_600, "gcp postgres.gb.ha": 14_000,
     "gcp postgres.2vcpu-8gb": 138_600, "gcp postgres.4vcpu-16gb": 277_200, "gcp postgres.2vcpu-8gb.ha": 277_200, "gcp postgres.4vcpu-16gb.ha": 554_400, "gcp postgres.storage": 170_000, "gcp postgres.storage.ha": 340_000,
@@ -392,5 +392,30 @@ describe("bearer token", () => {
   it("no token configured means no bearer access, even for an empty header value", () => {
     expect(bearerMatches("Bearer anything", undefined)).toBe(false);
     expect(bearerMatches("Bearer ", "")).toBe(false);
+  });
+});
+
+describe("e2-micro and download caps", () => {
+  it("GCP vm.2vcpu-1gb is derived as 0.25 x E2 core + 1 x E2 RAM (there is no 'E2 Micro' SKU)", async () => {
+    const { rows } = await run("gcp");
+    const get = (k: string) => rows.find((r) => r.skuKey === k)!.usdMicros;
+    const exact = get("vm.vcpu") / 4 + get("vm.gb");
+    expect(Math.abs(get("vm.2vcpu-1gb") - exact)).toBeLessThanOrEqual(1);
+    expect(get("vm.2vcpu-1gb")).toBeGreaterThan(get("vm.gb"));
+    expect(fixture("gcp-skus-6F81-5844-456A.json").toString()).not.toContain("E2 Micro");
+  });
+
+  it("only the AmazonRDS file gets the 500 MiB cap; every other AWS file keeps 50 MiB and EC2 keeps 2 GiB", async () => {
+    const { fetcher } = createFixtureFetcher();
+    const caps = new Map<string, number>();
+    const spy = ((req: Parameters<typeof fetcher>[0]) => {
+      caps.set(req.url.split("/offers/v1.0/aws/")[1]?.split("/")[0] ?? req.url, req.maxBytes);
+      return fetcher(req);
+    }) as typeof fetcher;
+    await collectSource("aws_other", { fetch: spy, signal: signal(), gcpApiKey: "k" });
+    await collectSource("aws_ec2", { fetch: spy, signal: signal(), gcpApiKey: "k" });
+    expect(caps.get("AmazonRDS")).toBe(500 * 1024 ** 2);
+    for (const g of SOURCE_GROUPS.aws_other.filter((g) => g !== "AmazonRDS")) expect(caps.get(g), g).toBe(50 * 1024 ** 2);
+    expect(caps.get("AmazonEC2")).toBe(2 * 1024 ** 3);
   });
 });

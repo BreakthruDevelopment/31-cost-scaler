@@ -62,11 +62,18 @@ export async function runPriceRefresh(
   const now = deps.now ?? (() => new Date());
 
   // The lock is a session lock on its OWN connection (never the app pool, which may be a single connection that the
-  // run itself needs). It dies with the connection, so a crashed process cannot leave it held.
-  const lockClient = postgres(env().DATABASE_URL, { max: 1, idle_timeout: 5, connect_timeout: 10 });
+  // run itself needs). It dies with the connection, so a crashed process cannot leave it held. That connection sits
+  // idle for the whole run (vendor downloads take minutes), so nothing may close it: no idle timeout and no max
+  // lifetime recycling (postgres.js defaults to recycling after 30-60 min). It is reserved so the lock and the unlock
+  // are guaranteed to run on the same session, and it is always unlocked and ended in `finally`.
+  const lockClient = postgres(env().DATABASE_URL, { max: 1, idle_timeout: 0, max_lifetime: null, connect_timeout: 10, onnotice: () => {} });
+  let held: postgres.ReservedSql | null = null;
+  let locked = false;
   try {
-    const [{ ok }] = await lockClient`select pg_try_advisory_lock(hashtextextended(${LOCK_NAME}, 0)) as ok`;
+    held = await lockClient.reserve();
+    const [{ ok }] = await held`select pg_try_advisory_lock(hashtextextended(${LOCK_NAME}, 0)) as ok`;
     if (!ok) throw new ConflictError("A price refresh is already running.");
+    locked = true;
     // Only now does an admin's press count: a refresh that never started does not spend the 10-minute slot.
     if (trigger === "admin" && actor && actor.role === "admin") {
       const adminId = actor.id;
@@ -85,6 +92,18 @@ export async function runPriceRefresh(
     }
     return await runPriceSource(source, trigger, { fetch: deps.fetch ?? fetchPriceSource, gcpApiKey: gcpKey });
   } finally {
+    if (held) {
+      // Explicit unlock, then release; a false answer means the session lost the lock mid-run, which must be visible.
+      if (locked) {
+        const unlocked = await held`select pg_advisory_unlock(hashtextextended(${LOCK_NAME}, 0)) as ok`.then((r) => r[0]?.ok === true, () => null);
+        if (unlocked === false) log.error("price.refresh.lock_lost", {});
+      }
+      try {
+        held.release();
+      } catch {
+        // ending the client below closes the session either way
+      }
+    }
     await lockClient.end({ timeout: 5 }).catch(() => {}); // closing the connection releases the lock
   }
 }
