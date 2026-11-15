@@ -82,8 +82,10 @@ export type CloudPrice = {
   totalMicros: number;
   /** Sum of the credit lines (zero or negative). */
   creditMicros: number;
-  /** totalMicros + creditMicros. */
+  /** totalMicros + creditMicros. Show it labelled with `netLabel`; ranking and savings use the list total. */
   netMicros: number;
+  /** "after always-free allowances" (or the wider wording when new-account allowances were applied). */
+  netLabel: string;
   /** False when any line is not listed: the total is then missing a part and is not comparable. */
   complete: boolean;
   unlistedCount: number;

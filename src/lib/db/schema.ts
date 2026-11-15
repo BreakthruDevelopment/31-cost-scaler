@@ -81,7 +81,7 @@ export const PRICE_UNITS = ["hour", "vcpu_hour", "gb_hour", "gb_month", "gb", "m
 export const PRICE_STATUSES = ["active", "quarantined"] as const;
 export const REFRESH_SOURCES = ["aws_ec2", "aws_other", "azure", "gcp", "oci", "footprint"] as const;
 export const REFRESH_TRIGGERS = ["scheduler", "admin"] as const;
-export const REFRESH_OUTCOMES = ["running", "ok", "partial", "failed"] as const;
+export const REFRESH_OUTCOMES = ["running", "ok", "partial", "failed", "unavailable"] as const;
 
 /** One normalized list price (public). `usd_micros` is integer micro-dollars per `unit`. */
 export const pricePoint = pgTable(

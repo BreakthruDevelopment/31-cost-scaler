@@ -16,6 +16,9 @@ import { CLOUD_LABEL, type Cloud, type PriceTable } from "./types";
  * Plus the one-time egress of the data out of the source cloud at its list rate.
  * Verdict (Michael, 2026-11-14): move = pays back in 6 months or less AND saves at least $10 a month;
  * consider = pays back in 18 months or less; otherwise stay. All comparisons are exact integer arithmetic.
+ * The saving is measured on LIST totals (Claude, 2026-11-15): free allowances are one account's pool and change with
+ * what else it runs, so they never decide a move. Net (after always-free allowances) is returned beside the list
+ * figures for display only.
  */
 export const EFFORT_RULES = {
   addCloudHours: "2",
@@ -34,6 +37,8 @@ export type Verdict = "move" | "consider" | "stay" | "blocked" | "not_enough_dat
 export type Blocker = { code: "object_storage_gcp_only" | "oci_no_app_secrets"; reason: string };
 
 export type EffortLine = { label: string; hours: string; micros: number };
+/** List cost per cloud (what the saving uses) and net beside it (display only). */
+export type MoveSide = { from: number; to: number; fromComplete: boolean; toComplete: boolean; fromNet: number; toNet: number };
 export type MoveResult = {
   app: string;
   from: Cloud;
@@ -41,10 +46,12 @@ export type MoveResult = {
   /** What the saving is measured on: the scenario when one is given, else the app as it runs now. */
   basis: "scenario" | "now";
   hourlyRateMicros: number;
-  /** Net monthly cost of the app as it runs today (shared parts split across the apps on each cloud). */
-  now: { from: number; to: number; fromComplete: boolean; toComplete: boolean };
-  /** Net monthly cost of the scenario on each cloud, or null without one. */
-  atScenario: { from: number; to: number; fromComplete: boolean; toComplete: boolean } | null;
+  /** LIST monthly cost of the app as it runs today (shared parts split across the apps on each cloud). */
+  now: MoveSide;
+  /** LIST monthly cost of the scenario on each cloud, or null without one. */
+  atScenario: MoveSide | null;
+  /** Wording for every `net*` figure. */
+  netLabel: string;
   monthlySavingMicros: number | null;
   effort: { lines: EffortLine[]; hours: string; micros: number };
   oneTimeEgress: { gb: string; micros: number | null };
@@ -136,7 +143,7 @@ export function migrationBreakEven(input: MoveInput): MoveResult {
   const fromSide = scenFrom ?? { price: nowFrom };
   const toSide = scenTo ?? { price: nowTo };
   const complete = fromSide.price.complete && toSide.price.complete;
-  const saving = BigInt(fromSide.price.netMicros) - BigInt(toSide.price.netMicros);
+  const saving = BigInt(fromSide.price.totalMicros) - BigInt(toSide.price.totalMicros);
   const oneTime = egressMicros === null ? null : effortMicros + egressMicros;
 
   let verdict: Verdict;
@@ -159,7 +166,15 @@ export function migrationBreakEven(input: MoveInput): MoveResult {
     else reasons.push(`Takes more than ${CONSIDER_MAX_MONTHS} months to pay back.`);
   }
 
-  const side = (a: { price: { netMicros: number; complete: boolean } }, b: { price: { netMicros: number; complete: boolean } }) => ({ from: a.price.netMicros, to: b.price.netMicros, fromComplete: a.price.complete, toComplete: b.price.complete });
+  type P = { price: { totalMicros: number; netMicros: number; complete: boolean } };
+  const side = (a: P, b: P): MoveSide => ({
+    from: a.price.totalMicros,
+    to: b.price.totalMicros,
+    fromComplete: a.price.complete,
+    toComplete: b.price.complete,
+    fromNet: a.price.netMicros,
+    toNet: b.price.netMicros,
+  });
   const priceIds = [...new Set([...nowFrom.lines, ...nowTo.lines, ...(scenFrom?.price.lines ?? []), ...(scenTo?.price.lines ?? [])].flatMap((l) => l.priceIds).concat(egressIds))];
   return {
     app: app.name,
@@ -169,6 +184,7 @@ export function migrationBreakEven(input: MoveInput): MoveResult {
     hourlyRateMicros: toSafe(rate),
     now: side({ price: nowFrom }, { price: nowTo }),
     atScenario: scenFrom && scenTo ? side(scenFrom, scenTo) : null,
+    netLabel: nowFrom.netLabel,
     monthlySavingMicros: complete ? toSafe(saving) : null,
     effort: { lines: effortLines, hours: ppmToText(hours), micros: toSafe(effortMicros) },
     oneTimeEgress: { gb: ppmToText(moveGb), micros: egressMicros === null ? null : toSafe(egressMicros) },

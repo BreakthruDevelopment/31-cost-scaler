@@ -1,0 +1,165 @@
+{
+ "skus": [
+  {
+   "name": "services/x/skus/S0019",
+   "skuId": "S0019-SYN",
+   "description": "Network Internet Egress from Americas to Americas",
+   "category": {
+    "serviceDisplayName": "Networking",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 120000000
+        }
+       },
+       {
+        "startUsageAmount": 1024,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 110000000
+        }
+       },
+       {
+        "startUsageAmount": 10240,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 80000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0020",
+   "skuId": "S0020-SYN",
+   "description": "Network Load Balancing: Forwarding Rule Minimum Service Charge in Americas",
+   "category": {
+    "serviceDisplayName": "Networking",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "h",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 25000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0021",
+   "skuId": "S0021-SYN",
+   "description": "Network Load Balancing: Data Processing Charge in Americas",
+   "category": {
+    "serviceDisplayName": "Networking",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 8000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  },
+  {
+   "name": "services/x/skus/S0022",
+   "skuId": "S0022-SYN",
+   "description": "Network Internet Egress from Americas to China",
+   "category": {
+    "serviceDisplayName": "Networking",
+    "resourceFamily": "Compute",
+    "resourceGroup": "X",
+    "usageType": "OnDemand"
+   },
+   "serviceRegions": [
+    "us-central1",
+    "us-east1"
+   ],
+   "pricingInfo": [
+    {
+     "summary": "",
+     "pricingExpression": {
+      "usageUnit": "GiBy",
+      "displayQuantity": 1,
+      "tieredRates": [
+       {
+        "startUsageAmount": 0,
+        "unitPrice": {
+         "currencyCode": "USD",
+         "units": "0",
+         "nanos": 230000000
+        }
+       }
+      ]
+     },
+     "currencyConversionRate": 1,
+     "effectiveTime": "2026-11-01T00:00:00Z"
+    }
+   ]
+  }
+ ],
+ "nextPageToken": ""
+}

@@ -5,6 +5,7 @@ import type { Actor } from "@/lib/auth/rbac";
 import { db } from "@/lib/db";
 import { BadRequestError, NotFoundError } from "@/lib/errors";
 import { listFootprint } from "@/lib/footprint/refresh";
+import { REGIONS } from "@/lib/price-ingest/types";
 import { listPricePoints } from "@/lib/prices";
 import { getScenario } from "@/lib/scenarios";
 import { jsonHasNul } from "@/lib/text";
@@ -20,12 +21,15 @@ import { CLOUD_ORDER, type Cloud, type PriceTable } from "./types";
 export const PRICE_RUNS_PER_HOUR = 120;
 const PRICE_RUN_MESSAGE = "Too many pricing runs this hour. Try again later.";
 
-/** The active price rows as the engine's input. Public data: anyone may read it. */
+/**
+ * The active price rows as the engine's input. Public data: anyone may read it. Only each cloud's reference region
+ * (`REGIONS`, the one price ingestion reads) is used, so a stray row from another region can never be priced.
+ */
 export async function loadPriceTable(subject: Subject = null): Promise<PriceTable> {
   assertCan(subject, "read", "price_point");
   const rows = await listPricePoints();
   return buildPriceTable(
-    rows.map((r) => ({
+    rows.filter((r) => r.region === REGIONS[r.cloud]).map((r) => ({
       id: r.id,
       cloud: r.cloud,
       component: r.component,

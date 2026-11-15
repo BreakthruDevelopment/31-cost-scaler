@@ -1,0 +1,2 @@
+ALTER TABLE "price_refresh" DROP CONSTRAINT "price_refresh_outcome_chk";--> statement-breakpoint
+ALTER TABLE "price_refresh" ADD CONSTRAINT "price_refresh_outcome_chk" CHECK ("price_refresh"."outcome" in ('running', 'ok', 'partial', 'failed', 'unavailable'));

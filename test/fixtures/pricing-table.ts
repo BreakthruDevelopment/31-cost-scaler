@@ -2,7 +2,7 @@ import type { Cloud, Component, PriceRow, PriceUnit } from "../../src/lib/pricin
 
 /**
  * A small, SYNTHETIC price table in the normalized shape (micro-dollars per unit) for the pricing engine's tests and
- * for the CI smoke seed (`pnpm seed:pricing-fixture`). The numbers are round, plausible list prices, not real quotes.
+ * (CI's smoke test seeds the ingestion fixtures with `pnpm seed:prices` instead). The numbers are round, plausible list prices, not real quotes.
  * It follows the real table's keys and gaps: Azure has no HA rate, Fargate and Container Instances no per-request
  * price, Google Cloud bills the load balancer per GB, and Oracle lists no database and no identity price.
  */
@@ -17,6 +17,7 @@ const SPECS: Spec[] = [
   ["aws", "serverless", "serverless.lambda.gb", "gb_hour", 60_000],
   ["aws", "serverless", "serverless.lambda.gb.arm64", "gb_hour", 48_000],
   ["aws", "serverless", "serverless.lambda.requests", "million_requests", 200_000],
+  ["aws", "postgres", "postgres.2vcpu-1gb", "hour", 16_000],
   ["aws", "postgres", "postgres.2vcpu-8gb", "hour", 178_000],
   ["aws", "postgres", "postgres.4vcpu-16gb", "hour", 356_000],
   ["aws", "postgres", "postgres.2vcpu-8gb.ha", "hour", 356_000],
@@ -36,6 +37,7 @@ const SPECS: Spec[] = [
   ["azure", "serverless", "serverless.vcpu", "vcpu_hour", 86_400],
   ["azure", "serverless", "serverless.gb", "gb_hour", 10_800],
   ["azure", "serverless", "serverless.requests", "million_requests", 400_000],
+  ["azure", "postgres", "postgres.1vcpu-2gb", "hour", 25_000],
   ["azure", "postgres", "postgres.2vcpu-8gb", "hour", 180_000],
   ["azure", "postgres", "postgres.4vcpu-16gb", "hour", 360_000],
   ["azure", "postgres", "postgres.storage", "gb_month", 115_000],
@@ -45,6 +47,7 @@ const SPECS: Spec[] = [
   ["azure", "load_balancer", "load_balancer.hour", "hour", 25_000],
   ["azure", "load_balancer", "load_balancer.capacity", "hour", 7_200],
   // Google Cloud
+  ["gcp", "vm", "vm.2vcpu-1gb", "hour", 8_000],
   ["gcp", "vm", "vm.2vcpu-8gb", "hour", 67_000],
   ["gcp", "vm", "vm.4vcpu-16gb", "hour", 134_000],
   ["gcp", "serverless", "serverless.vcpu", "vcpu_hour", 86_400],
@@ -62,6 +65,8 @@ const SPECS: Spec[] = [
   ["gcp", "load_balancer", "load_balancer.hour", "hour", 25_000],
   ["gcp", "load_balancer", "load_balancer.data", "gb", 8_000],
   // Oracle (no database, no identity, no per-request price)
+  ["oci", "vm", "vm.a1.ocpu", "vcpu_hour", 10_000],
+  ["oci", "vm", "vm.a1.gb", "gb_hour", 1_000],
   ["oci", "vm", "vm.2vcpu-8gb", "hour", 55_000],
   ["oci", "vm", "vm.4vcpu-16gb", "hour", 110_000],
   ["oci", "serverless", "serverless.vcpu", "vcpu_hour", 12_500],

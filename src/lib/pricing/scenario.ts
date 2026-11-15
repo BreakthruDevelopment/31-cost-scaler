@@ -11,7 +11,8 @@ export const ASSUMPTIONS: readonly string[] = [
   "Serverless requests are users x requests per user a month, charged only where the cloud lists a per-request price.",
   "Sizes snap up to the nearest size the cloud lists; each line says when it did.",
   "Multi-AZ uses the list's high-availability rate where there is one, else twice the instance. Serverless, object storage and identity are already spread over zones, so multi-AZ adds nothing there.",
-  "Multi-region doubles compute, containers, database, storage and load balancers, and adds inter-region transfer for the replicated database and object storage at the internet egress rate.",
+  "Multi-region doubles compute, containers, database, storage and load balancers, and adds inter-region transfer for the replicated database and object storage at the internet egress rate. Inter-region transfer is its own usage: it does not use up the internet-egress free allowance.",
+  "Load balancers under multi-region: we assume a second balancer in the other region (its hours are doubled). Data processed is not doubled, because the same traffic is split across the two, not repeated.",
   "Read replicas are the database instance price times the number of replicas (replica storage is not added).",
   "A load balancer is one capacity unit per hour where the cloud bills capacity units, and its data processed is the egress volume where the cloud bills per GB.",
   "Free-tier allowances are separate credit lines, each with its source. Allowances for new accounts (12 months) are applied only when asked.",
@@ -21,13 +22,31 @@ export type ScenarioPrice = {
   /** The oldest fetch date among the price rows used. */
   pricesAsOf: string | null;
   clouds: Record<Cloud, CloudPrice>;
-  /** Lowest net among clouds with every line listed; when none is complete, the lowest among clouds with any priced line. */
+  /**
+   * Lowest LIST total among clouds with every line listed (net is shown beside it, never ranked). Null when no cloud
+   * is complete: incomplete totals are not comparable, so nobody is named cheapest.
+   */
   cheapest: Cloud | null;
-  /** False when `cheapest` is picked among incomplete totals. */
+  /** True exactly when `cheapest` is set; kept so a screen can say "no cloud lists every part". */
   cheapestIsComplete: boolean;
+  /**
+   * Informational only (never drives a verdict): the lines every cloud lists, totalled per cloud, shown when some
+   * cloud is missing a line. Null when every cloud is complete or no line is listed everywhere.
+   */
+  likeForLike: LikeForLike | null;
   conditionalCreditsApplied: boolean;
   assumptions: string[];
   disclaimer: string;
+};
+
+export type LikeForLike = {
+  /** e.g. "compared without Database (PostgreSQL): not listed on Oracle Cloud". */
+  label: string;
+  comparedLineIds: string[];
+  leftOut: { id: string; label: string; notListedOn: Cloud[] }[];
+  /** List totals over the compared lines only. */
+  totalsMicros: Record<Cloud, number>;
+  cheapest: Cloud | null;
 };
 
 const SINGLE_FACTOR = 1n;
@@ -211,7 +230,7 @@ function storageLines({ spec, cloud, table }: Run): Work[] {
           label: "Inter-region transfer",
           detail: `${ppmToText(replicated)} GB replicated once a month, at the internet egress rate`,
         },
-        [{ key: "egress.gb", unit: "gb", qty: replicated }],
+        [{ key: "egress.gb", unit: "gb", qty: replicated, noAllowance: true }],
       ),
     );
   }
@@ -242,7 +261,12 @@ function loadBalancerLine({ spec, cloud, table }: Run): Work | null {
       component: "load_balancer",
       label: "Load balancer",
       detail: `${n} x 730 h${redText(red)}`,
-      notes: red === "multi_az" ? ["Load balancers already span zones: multi-AZ adds nothing."] : [],
+      notes:
+        red === "multi_az"
+          ? ["Load balancers already span zones: multi-AZ adds nothing."]
+          : red === "multi_region"
+            ? ["Assumption: multi-region runs a second load balancer in the other region, so the hours are doubled; data processed is not."]
+            : [],
     },
     [
       { key: "load_balancer.hour", unit: "hour", qty: hoursFor(k) },
@@ -259,14 +283,33 @@ export function priceScenarioCloud(spec: ScenarioSpec, cloud: Cloud, table: Pric
   return finishCloud(cloud, works, table, opts);
 }
 
-/** Pick the cheapest cloud by net, then list total, then the fixed cloud order. */
+/** Pick the cheapest cloud by LIST total among complete clouds, ties by the fixed cloud order. Null when none is complete. */
 export function pickCheapest(clouds: Record<Cloud, CloudPrice>): { cheapest: Cloud | null; complete: boolean } {
-  const rank = (pool: CloudPrice[]) =>
-    [...pool].sort((a, b) => a.netMicros - b.netMicros || a.totalMicros - b.totalMicros || CLOUD_ORDER.indexOf(a.cloud) - CLOUD_ORDER.indexOf(b.cloud))[0];
   const complete = CLOUD_ORDER.map((c) => clouds[c]).filter((c) => c.complete);
-  if (complete.length > 0) return { cheapest: rank(complete).cloud, complete: true };
-  const partial = CLOUD_ORDER.map((c) => clouds[c]).filter((c) => c.lines.some((l) => l.status === "priced"));
-  return partial.length > 0 ? { cheapest: rank(partial).cloud, complete: false } : { cheapest: null, complete: false };
+  if (complete.length === 0) return { cheapest: null, complete: false };
+  const best = [...complete].sort((a, b) => a.totalMicros - b.totalMicros || CLOUD_ORDER.indexOf(a.cloud) - CLOUD_ORDER.indexOf(b.cloud))[0];
+  return { cheapest: best.cloud, complete: true };
+}
+
+/** The lines every cloud lists, totalled on list price. Informational: it never picks a verdict. */
+export function likeForLikeOf(clouds: Record<Cloud, CloudPrice>): LikeForLike | null {
+  if (CLOUD_ORDER.every((c) => clouds[c].complete)) return null;
+  const pricedOn = (id: string, c: Cloud) => clouds[c].lines.some((l) => l.id === id && l.status === "priced");
+  const ids = [...new Set(CLOUD_ORDER.flatMap((c) => clouds[c].lines.map((l) => l.id)))];
+  const common = ids.filter((id) => CLOUD_ORDER.every((c) => pricedOn(id, c)));
+  if (common.length === 0) return null;
+  const leftOut = ids
+    .filter((id) => !common.includes(id))
+    .map((id) => ({
+      id,
+      label: CLOUD_ORDER.flatMap((c) => clouds[c].lines.filter((l) => l.id === id).map((l) => l.label))[0] ?? id,
+      notListedOn: CLOUD_ORDER.filter((c) => !pricedOn(id, c)),
+    }));
+  const totals = {} as Record<Cloud, number>;
+  for (const c of CLOUD_ORDER) totals[c] = clouds[c].lines.filter((l) => common.includes(l.id)).reduce((sum, l) => sum + (l.micros ?? 0), 0);
+  const cheapest = [...CLOUD_ORDER].sort((a, b) => totals[a] - totals[b] || CLOUD_ORDER.indexOf(a) - CLOUD_ORDER.indexOf(b))[0];
+  const label = `compared without ${leftOut.map((l) => `${l.label}: not listed on ${l.notListedOn.map((c) => CLOUD_LABEL[c]).join(", ")}`).join("; ")}`;
+  return { label, comparedLineIds: common, leftOut, totalsMicros: totals, cheapest };
 }
 
 /** Price a scenario on all four clouds. Pure: the same spec and table always give the same result. */
@@ -279,6 +322,7 @@ export function priceScenario(spec: ScenarioSpec, table: PriceTable, opts: Price
     clouds,
     cheapest,
     cheapestIsComplete: complete,
+    likeForLike: likeForLikeOf(clouds),
     conditionalCreditsApplied: opts.conditionalCredits === true,
     assumptions: [...ASSUMPTIONS],
     disclaimer: DISCLAIMER,

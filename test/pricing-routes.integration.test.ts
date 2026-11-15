@@ -134,6 +134,23 @@ describe.skipIf(!url)("pricing routes (Postgres)", () => {
       }
     });
 
+    it("reads only each cloud's reference region: a stray row from another region is never priced", async () => {
+      current = A;
+      await sql`insert into price_point (cloud, component, sku_key, region, unit, usd_micros, tier_start, source_url, fetched_at)
+        values ('gcp', 'object_storage', 'object_storage.gb', 'europe-west1', 'gb_month', 1, 0, 'https://example.test/fixture/stray', now())`;
+      try {
+        const { result } = await priceBody(await price.POST(post("/api/price", { spec: BASE_SPEC })));
+        const l = result.clouds.gcp.lines.find((x) => x.id === "object_storage")!;
+        expect(l.status).toBe("priced");
+        expect(l.priceIds).toHaveLength(1);
+        expect(l.priceIds[0]).not.toBe("");
+        const [stray] = await sql`select id from price_point where region = 'europe-west1' and cloud = 'gcp'`;
+        expect(l.priceIds).not.toContain(stray.id);
+      } finally {
+        await sql`delete from price_point where region = 'europe-west1' and cloud = 'gcp'`;
+      }
+    });
+
     it("allows 120 pricing runs per user per hour, then 429; another user is unaffected", async () => {
       current = C;
       await sql`insert into rate_event (user_id, kind) select ${C.id}, 'price_run' from generate_series(1, 120)`;

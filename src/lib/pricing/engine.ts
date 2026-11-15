@@ -9,7 +9,8 @@ export type PriceOptions = {
   conditionalCredits?: boolean;
 };
 
-export type Part = { key: string; unit: PriceUnit; qty: Ppm; optional?: boolean };
+/** `noAllowance`: a separate usage bucket, so no free-tier allowance for this sku is consumed by it. */
+export type Part = { key: string; unit: PriceUnit; qty: Ppm; optional?: boolean; noAllowance?: boolean };
 export type Usage = { skuKey: string; unit: PriceUnit; qty: Ppm };
 /** What an instance line consumed, so an instance-hour allowance can be matched to it. */
 export type InstanceMeta = { family: "vm" | "postgres"; vcpu: Ppm; memGb: Ppm; count: bigint; hoursPerInstance: Ppm };
@@ -30,6 +31,9 @@ export type Work = {
   usage: Usage[];
   instance?: InstanceMeta;
 };
+
+/** What "net" means, shown beside every net figure. */
+export const NET_LABEL = "after always-free allowances";
 
 const dedupe = <T>(xs: T[]): T[] => [...new Set(xs)];
 
@@ -64,7 +68,7 @@ export function priceWork(table: PriceTable, cloud: Cloud, base: LineBase, parts
     const cost = tieredCost(listed, part.qty);
     micros += cost.micros;
     rows.push(...cost.used);
-    usage.push({ skuKey: part.key, unit: part.unit, qty: part.qty });
+    if (!part.noAllowance) usage.push({ skuKey: part.key, unit: part.unit, qty: part.qty });
   }
   if (missing.length > 0) return unlisted(cloud, base, missing);
   return { id: base.id, component: base.component, label: base.label, detail: base.detail, snap: base.snap ?? null, notes: base.notes ?? [], status: "priced", micros, rows, usage, instance: base.instance };
@@ -174,6 +178,7 @@ export function finishCloud(cloud: Cloud, works: Work[], table: PriceTable, opts
       totalMicros: toSafe(total),
       creditMicros: toSafe(credit),
       netMicros: toSafe(total + credit),
+      netLabel: opts.conditionalCredits ? "after free-tier allowances, including new-account ones" : NET_LABEL,
       complete: unlistedCount === 0,
       unlistedCount,
       notes,

@@ -35,6 +35,7 @@ jobs:
       TEST_DATABASE_URL: postgres://app:app@localhost:5432/app
       BETTER_AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
       APP_URL: http://localhost:3000
+      COST_SCALER_REFRESH_TOKEN: ci-only-refresh-token-0123456789abcdef
       AI_PROVIDER: demo
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -53,8 +54,8 @@ jobs:
         run: pnpm db:migrate
       - name: Seed the footprint fixture (no network)
         run: pnpm seed:footprint
-      - name: Seed the pricing fixture (no network)
-        run: pnpm seed:pricing-fixture
+      - name: Seed the price fixtures (synthetic, no network)
+        run: pnpm seed:prices
       - name: Start the built app
         run: |
           cp -r public .next/standalone/

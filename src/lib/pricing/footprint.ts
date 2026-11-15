@@ -7,8 +7,9 @@ import { CLOUD_ORDER, type Cloud, type CloudPrice, type PriceTable } from "./typ
 /**
  * What an app costs on each cloud today: the stack profile's sizes (`src/lib/footprint/stack-profiles.ts`) priced
  * from the table. The shared database or VM is split evenly across the apps on that cloud, and so is each per-unit
- * free allowance (an account's allowance is one pool). Instances the list has no row for (a micro, a burstable) are
- * priced at the smallest listed size that holds them, and the line says so: the list cost is then an upper bound.
+ * free allowance (an account's allowance is one pool). The portfolio's own sizes are listed (db.t4g.micro, B1ms,
+ * e2-micro and the Ampere A1 per-OCPU and per-GB rates), so they price at their real size. A size the table does not
+ * list is priced at the smallest listed size that holds it, and the line says so: that cost is then an upper bound.
  */
 export type FootprintApp = { name: string; title?: string; clouds: readonly string[]; storage: boolean; secretCount: number };
 
@@ -50,8 +51,26 @@ function sharedWorks(cloud: Cloud, profile: StackProfile, table: PriceTable, n: 
   const vcpu = toPpm(size.vcpu);
   const mem = toPpm(size.memoryGb);
   const family = cloud === "aws" || cloud === "azure" ? "postgres" : "vm";
-  const snapped = snapUp(listedSizes(table, cloud, family), vcpu, mem);
   const what = `${s.label} (${s.instance}, ${size.vcpu} vCPU / ${size.memoryGb} GB)`;
+  if (cloud === "oci" && table.rows(cloud, "vm.a1.ocpu").length > 0 && table.rows(cloud, "vm.a1.gb").length > 0) {
+    // The portfolio's Oracle VM is an Ampere A1 Flex: billed per OCPU-hour and per GB-hour, not as an E4 size.
+    const work = priceWork(
+      table,
+      cloud,
+      {
+        ...base,
+        detail: `A1 Flex ${ppmToText(vcpu)} OCPU / ${ppmToText(mem)} GB x 730 h`,
+        notes: [`The ${s.storageGb} GB boot volume is not priced: the table has no block-volume price.`],
+        instance: { family: "vm", vcpu, memGb: mem, count: 1n, hoursPerInstance: HOURS_PER_MONTH_PPM },
+      },
+      [
+        { key: "vm.a1.ocpu", unit: "vcpu_hour", qty: mulDivRound(vcpu, HOURS_PER_MONTH_PPM, PPM) },
+        { key: "vm.a1.gb", unit: "gb_hour", qty: mulDivRound(mem, HOURS_PER_MONTH_PPM, PPM) },
+      ],
+    );
+    return [shareWork(work, n, what)];
+  }
+  const snapped = snapUp(listedSizes(table, cloud, family), vcpu, mem);
   if (!snapped) return [unlisted(cloud, { ...base, detail: s.instance }, [`${family} sizes`])];
   const exact = snapped.multiple === 1n && snapped.size.vcpu === vcpu && snapped.size.memGb === mem;
   const notes = [

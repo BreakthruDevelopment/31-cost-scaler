@@ -6,10 +6,10 @@ import { type FootprintApp, outgrowsFreeTier, priceFootprintApp, priceFootprintA
 import { costMicros, decimalToPpm, formatUsd, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
 import { CONSIDER_MAX_MONTHS, MOVE_MIN_SAVING_MICROS, blockersFor, migrationBreakEven, verdictFor } from "./move";
 import { TEN_X_PRESET } from "./presets";
-import { priceScenario, priceScenarioCloud } from "./scenario";
+import { likeForLikeOf, pickCheapest, priceScenario, priceScenarioCloud } from "./scenario";
 import { BASE_SPEC, type ScenarioSpec } from "./spec";
 import { buildPriceTable, listedSizes, snapUp, tieredCost } from "./table";
-import { CLOUD_ORDER, type Cloud, type PriceRow } from "./types";
+import { CLOUD_ORDER, type Cloud, type CloudPrice, type PriceRow } from "./types";
 
 const ROWS = fixtureRowsWithIds();
 const T = buildPriceTable(ROWS);
@@ -76,7 +76,7 @@ describe("price table helpers", () => {
     expect(snapUp(sizes, toPpm(2), toPpm(12))).toMatchObject({ size: { key: "vm.4vcpu-16gb" }, multiple: 1n }); // memory forces the bigger size
     expect(snapUp(sizes, toPpm(8), toPpm(32))).toMatchObject({ size: { key: "vm.4vcpu-16gb" }, multiple: 2n });
     expect(snapUp([], toPpm(1), toPpm(1))).toBeNull();
-    expect(listedSizes(T, "aws", "postgres").map((s) => s.key)).toEqual(["postgres.2vcpu-8gb", "postgres.4vcpu-16gb"]); // .ha keys are not sizes
+    expect(listedSizes(T, "aws", "postgres").map((s) => s.key)).toEqual(["postgres.2vcpu-1gb", "postgres.2vcpu-8gb", "postgres.4vcpu-16gb"]); // .ha keys are not sizes
   });
 });
 
@@ -137,6 +137,19 @@ describe("redundancy", () => {
     expect(l.micros).toBe(2 * 730 * 180_000 + 2 * 100 * 115_000);
     expect(l.notes.join(" ")).toMatch(/2x the instance/);
   });
+  it("inter-region transfer is its own usage: it does not use up the internet-egress allowance", () => {
+    const s = spec({ storage: { objectGb: 1000, egressGb: 40 }, redundancy: { ...BASE_SPEC.redundancy, storage: "multi_region" } });
+    const p = one(s, "aws");
+    expect(p.creditLines.find((c) => c.id.endsWith("egress.gb"))?.micros).toBe(-40 * 90_000); // only the 40 GB of internet egress, not 1,040
+    expect(p.lines.find((l) => l.id === "inter_region_transfer")?.micros).toBe(1000 * 90_000); // the 1,000 GB bucket, replicated once
+  });
+  it("a second load balancer under multi-region is documented in the line and the assumptions", () => {
+    const lb = (r: "single" | "multi_region") => spec({ loadBalancers: 1, redundancy: { ...BASE_SPEC.redundancy, loadBalancers: r } });
+    const doubled = line(lb("multi_region"), "aws", "load_balancer");
+    expect(doubled.micros).toBe(2 * (line(lb("single"), "aws", "load_balancer").micros ?? 0));
+    expect(doubled.notes.join(" ")).toMatch(/second load balancer/);
+    expect(priceScenario(lb("multi_region"), T).assumptions.join(" ")).toMatch(/second balancer in the other region/);
+  });
   it("multi-AZ VM is 2x the instance; serverless adds nothing", () => {
     const vm = spec({ compute: { kind: "vm", instances: 1, vcpu: 2, memoryGb: 8, busyFraction: 1 }, redundancy: { ...BASE_SPEC.redundancy, compute: "multi_az" } });
     expect(line(vm, "aws", "compute").micros).toBe(2 * 730 * 96_000);
@@ -195,27 +208,51 @@ describe("missing prices", () => {
 
 describe("priceScenario", () => {
   const r = priceScenario(BASE_SPEC, T);
-  it("returns all four clouds and picks the cheapest among complete totals", () => {
+  it("returns all four clouds and picks the cheapest LIST total among complete clouds", () => {
     expect(Object.keys(r.clouds)).toEqual([...CLOUD_ORDER]);
     expect(r.clouds.oci.complete).toBe(false);
     expect(r.cheapestIsComplete).toBe(true);
     const completes = CLOUD_ORDER.filter((c) => r.clouds[c].complete);
     expect(completes).toEqual(["aws", "azure", "gcp"]);
-    expect(r.cheapest).toBe([...completes].sort((a, b) => r.clouds[a].netMicros - r.clouds[b].netMicros)[0]);
+    expect(r.cheapest).toBe([...completes].sort((a, b) => r.clouds[a].totalMicros - r.clouds[b].totalMicros)[0]);
   });
-  it("every priced line names the price rows it used, and they exist in the table", () => {
-    const ids = new Set(ROWS.map((x) => x.id));
-    for (const c of CLOUD_ORDER) for (const l of r.clouds[c].lines) if (l.status === "priced") {
-      expect(l.priceIds.length, `${c} ${l.id}`).toBeGreaterThan(0);
-      for (const id of l.priceIds) expect(ids.has(id)).toBe(true);
-    }
+  it("ranks on list totals even when allowances would reorder the nets", () => {
+    // Identity at 40,000 MAU: AWS's 10,000 free MAU cut its bill more than Google's list price would suggest.
+    const s = spec({ identity: { mau: 40_000 }, users: { mau: 40_000, requestsPerUser: 1 } });
+    const p = priceScenario(s, T);
+    const complete = CLOUD_ORDER.filter((c) => p.clouds[c].complete);
+    const byList = [...complete].sort((a, b) => p.clouds[a].totalMicros - p.clouds[b].totalMicros || CLOUD_ORDER.indexOf(a) - CLOUD_ORDER.indexOf(b))[0];
+    expect(p.cheapest).toBe(byList);
+    for (const c of CLOUD_ORDER) expect(p.clouds[c].netLabel).toBe("after always-free allowances");
+    expect(priceScenario(s, T, { conditionalCredits: true }).clouds.aws.netLabel).toMatch(/new-account/);
   });
-  it("the total is the sum of priced lines and net is total plus credits", () => {
+  it("offers a like-for-like subtotal when a cloud lacks a line, and it never changes the cheapest", () => {
+    expect(r.likeForLike).not.toBeNull();
+    const l = r.likeForLike!;
+    expect(l.label).toBe("compared without Database (PostgreSQL): not listed on Oracle Cloud; Identity: not listed on Oracle Cloud");
+    expect(l.leftOut.map((x) => x.id)).toEqual(["database", "identity"]);
+    expect(l.comparedLineIds).not.toContain("database");
     for (const c of CLOUD_ORDER) {
-      const p = r.clouds[c];
-      expect(p.totalMicros).toBe(p.lines.reduce((s, l) => s + (l.micros ?? 0), 0));
-      expect(p.netMicros).toBe(p.totalMicros + p.creditMicros);
+      const expected = r.clouds[c].lines.filter((x) => l.comparedLineIds.includes(x.id)).reduce((sum, x) => sum + (x.micros ?? 0), 0);
+      expect(l.totalsMicros[c]).toBe(expected);
     }
+    expect(r.cheapest).not.toBe("oci"); // Oracle is incomplete: the subtotal cannot make it cheapest
+  });
+  it("ranks by list total, not net, and ties go to the fixed cloud order (synthetic totals)", () => {
+    const mk = (cloud: Cloud, total: number, net: number, complete = true): CloudPrice => ({ cloud, label: cloud, lines: [], creditLines: [], totalMicros: total, creditMicros: net - total, netMicros: net, netLabel: "", complete, unlistedCount: complete ? 0 : 1, notes: [] });
+    const clouds = { aws: mk("aws", 100, 0), azure: mk("azure", 50, 40), gcp: mk("gcp", 50, 10), oci: mk("oci", 1, 1, false) };
+    expect(pickCheapest(clouds)).toEqual({ cheapest: "azure", complete: true }); // list tie azure/gcp -> cloud order; gcp's lower net is ignored; oci incomplete
+    expect(pickCheapest({ ...clouds, aws: mk("aws", 100, 0, false), azure: mk("azure", 5, 5, false), gcp: mk("gcp", 5, 5, false) })).toEqual({ cheapest: null, complete: false });
+  });
+  it("like-for-like covers only lines every cloud lists, and is absent when all clouds are complete", () => {
+    const line = (id: string, micros: number | null) => ({ id, component: "compute" as const, label: id === "database" ? "Database (PostgreSQL)" : id, detail: "", status: micros === null ? ("not_listed" as const) : ("priced" as const), micros, priceIds: [], notes: [], snap: null });
+    const mk = (cloud: Cloud, lines: ReturnType<typeof line>[]): CloudPrice => ({ cloud, label: cloud, lines, creditLines: [], totalMicros: 0, creditMicros: 0, netMicros: 0, netLabel: "", complete: lines.every((l) => l.micros !== null), unlistedCount: lines.filter((l) => l.micros === null).length, notes: [] });
+    const full = (c: Cloud, n: number) => mk(c, [line("compute", n), line("database", n * 2)]);
+    expect(likeForLikeOf({ aws: full("aws", 1), azure: full("azure", 2), gcp: full("gcp", 3), oci: full("oci", 4) })).toBeNull();
+    const l = likeForLikeOf({ aws: full("aws", 1), azure: full("azure", 2), gcp: full("gcp", 3), oci: mk("oci", [line("compute", 4), line("database", null)]) })!;
+    expect(l.label).toBe("compared without Database (PostgreSQL): not listed on Oracle Cloud");
+    expect(l.totalsMicros).toEqual({ aws: 1, azure: 2, gcp: 3, oci: 4 });
+    expect(l.cheapest).toBe("aws");
   });
   it("is deterministic and reports the oldest fetch date", () => {
     expect(priceScenario(BASE_SPEC, T)).toEqual(r);
@@ -224,11 +261,13 @@ describe("priceScenario", () => {
     expect(priceScenario(BASE_SPEC, buildPriceTable(older)).pricesAsOf).toBe("2026-11-01T00:00:00.000Z");
     expect(r.disclaimer).toMatch(/List price estimate/);
   });
-  it("incomplete clouds are only chosen when nothing is complete", () => {
+  it("names nobody cheapest when no cloud lists every line", () => {
     const noPg = buildPriceTable(ROWS.filter((x) => x.component !== "postgres"));
     const p = priceScenario(BASE_SPEC, noPg);
     expect(p.cheapestIsComplete).toBe(false);
-    expect(p.cheapest).not.toBeNull();
+    expect(p.cheapest).toBeNull();
+    expect(p.likeForLike?.comparedLineIds).toEqual(["compute", "object_storage", "egress"]); // informational: still no verdict or cheapest from it
+    expect(p.likeForLike?.leftOut.map((l) => l.id)).toEqual(["database", "identity"]);
   });
 });
 
@@ -264,7 +303,7 @@ describe("free-tier credits", () => {
     expect(off.notes.join(" ")).toMatch(/12 months/);
     expect(on.creditLines.some((c) => c.conditional)).toBe(true);
     expect(on.netMicros).toBe(0);
-    expect(off.netMicros).toBe(132_240_000);
+    expect(off.netMicros).toBe(13_980_000); // db.t4g.micro is listed, so it prices at its real size
   });
 });
 
@@ -274,13 +313,33 @@ describe("footprint cost per app", () => {
     { name: "b", clouds: ["aws", "gcp"], storage: true, secretCount: 2 },
     { name: "c", clouds: ["gcp"], storage: false, secretCount: 0 },
   ];
-  it("splits the shared database evenly across the apps on that cloud and says the size was snapped", () => {
+  it("splits the shared database evenly across the apps on that cloud and prices the micro at its real size", () => {
     const cost = priceFootprintApp({ app: apps[0], cloud: "aws", n: 2, table: T });
     const shared = cost.lines.find((l) => l.id === "shared")!;
+    expect(shared.micros).toBe((730 * 16_000 + 20 * 115_000) / 2);
+    expect(shared.snap).toBeNull();
+    expect(shared.detail).toMatch(/2 vCPU \/ 1 GB/);
+    expect(shared.notes.join(" ")).not.toMatch(/upper bound/);
+    expect(cost.appsOnCloud).toBe(2);
+  });
+  it("prices the Azure B1ms, the Google e2-micro and the Oracle A1 at their listed sizes", () => {
+    const az = priceFootprintApp({ app: apps[0], cloud: "azure", n: 1, table: T }).lines.find((l) => l.id === "shared")!;
+    expect(az.micros).toBe(730 * 25_000 + 32 * 115_000);
+    expect(az.snap).toBeNull();
+    const gcp = priceFootprintApp({ app: apps[0], cloud: "gcp", n: 1, table: T }).lines.find((l) => l.id === "shared")!;
+    expect(gcp.micros).toBe(730 * 8_000);
+    expect(gcp.snap).toBeNull();
+    const oci = priceFootprintApp({ app: apps[0], cloud: "oci", n: 1, table: T });
+    expect(oci.lines.find((l) => l.id === "shared")!.micros).toBe(730 * (2 * 10_000 + 12 * 1_000)); // 2 OCPU + 12 GB, not an E4 size
+    expect(oci.creditLines.some((c) => c.id.endsWith("shared"))).toBe(true); // inside the Always Free A1 allowance
+    expect(oci.netMicros).toBe(0);
+  });
+  it("falls back to the smallest listed size that holds it, and says the cost is an upper bound", () => {
+    const noMicro = buildPriceTable(ROWS.filter((x) => x.skuKey !== "postgres.2vcpu-1gb"));
+    const shared = priceFootprintApp({ app: apps[0], cloud: "aws", n: 2, table: noMicro }).lines.find((l) => l.id === "shared")!;
     expect(shared.micros).toBe((730 * 178_000 + 20 * 115_000) / 2);
     expect(shared.snap?.requested).toBe("2 vCPU / 1 GB");
     expect(shared.notes.join(" ")).toMatch(/upper bound/);
-    expect(cost.appsOnCloud).toBe(2);
   });
   it("prices the app on all four clouds, counting itself on a cloud it isn't on yet", () => {
     const all = priceFootprintAppEverywhere({ app: apps[2], apps, table: T });
@@ -346,7 +405,10 @@ describe("migrationBreakEven", () => {
     expect(r.now.from).toBeGreaterThan(0);
     expect(r.atScenario).not.toBeNull();
     expect(r.priceIds.length).toBeGreaterThan(0);
-    expect(r.monthlySavingMicros).toBe(r.atScenario!.from - r.atScenario!.to);
+    expect(r.monthlySavingMicros).toBe(r.atScenario!.from - r.atScenario!.to); // list totals
+    expect(r.netLabel).toBe("after always-free allowances");
+    expect(r.atScenario!.fromNet).toBeLessThanOrEqual(r.atScenario!.from);
+    expect(r.atScenario!.toNet).toBeLessThanOrEqual(r.atScenario!.to);
     const noScenario = migrationBreakEven({ app: apps[0], apps, from: "aws", to: "gcp", table: T });
     expect(noScenario.basis).toBe("now");
     expect(noScenario.atScenario).toBeNull();
@@ -357,6 +419,13 @@ describe("migrationBreakEven", () => {
     expect(r.verdict).toBe("not_enough_data");
     expect(r.monthlySavingMicros).toBeNull();
     expect(r.breakEvenMonths).toBeNull();
+  });
+  it("measures the saving on list totals, not on net after allowances", () => {
+    const r = move(apps[0], "gcp", { scenario: spec({ users: { mau: 500, requestsPerUser: 200 } }) });
+    const listSaving = one(spec({ users: { mau: 500, requestsPerUser: 200 } }), "aws").totalMicros - one(spec({ users: { mau: 500, requestsPerUser: 200 } }), "gcp").totalMicros;
+    expect(r.monthlySavingMicros).toBe(listSaving);
+    const netSaving = r.atScenario!.fromNet - r.atScenario!.toNet;
+    expect(netSaving).not.toBe(listSaving);
   });
   it("rejects moving to the same cloud", () => {
     expect(() => move(apps[0], "aws")).toThrow();

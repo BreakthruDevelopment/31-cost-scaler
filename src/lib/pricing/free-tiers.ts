@@ -6,8 +6,7 @@ import type { Cloud, Component, PriceUnit } from "./types";
  * row it offsets (credit = that row's price for the allowed units); `skuKey: null` is an allowance of instance hours
  * that offsets the whole line of an eligible instance (`instance` says how big an instance may be).
  *
- * RECONCILIATION: the rows and field names match `src/lib/price-ingest/free-tiers.ts` from the price-ingestion PR
- * (31.2); this copy adds `instance` for the instance-hour rows. Once both are merged, keep one file and re-export.
+ * This is the one free-tiers file (the price-ingestion copy was merged into it; `instance` is for instance-hour rows).
  * Confirm the numbers against each vendor page whenever they are reviewed: vendors change them.
  */
 export type FreeTier = {
