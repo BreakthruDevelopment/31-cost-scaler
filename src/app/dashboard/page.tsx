@@ -13,8 +13,8 @@ export default async function DashboardPage() {
   const user = await requireUserOrRedirect();
   const scenarios = await listScenarios(user);
   const columns: Column<Row>[] = [
-    { key: "name", header: "Scenario", primary: true, cell: (s) => <span className="font-semibold break-words">{s.name}</span> },
-    { key: "base", header: "Based on", cell: (s) => <span className="text-muted break-words">{s.baseApp ?? "—"}</span> },
+    { key: "name", header: "Scenario", primary: true, cell: (s) => <span className="font-semibold wrap-anywhere">{s.name}</span> },
+    { key: "base", header: "Based on", cell: (s) => <span className="text-muted wrap-anywhere">{s.baseApp ?? "—"}</span> },
     { key: "updated", header: "Updated", className: "whitespace-nowrap", cell: (s) => s.updatedAt.toISOString().slice(0, 10) },
   ];
   return (
