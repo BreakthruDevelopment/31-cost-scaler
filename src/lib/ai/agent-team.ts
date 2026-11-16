@@ -221,12 +221,17 @@ export async function runDemoTeam<T>(opts: {
   const signal = AbortSignal.timeout(Math.max(1, opts.deadlineAt - Date.now()));
   const results: DemoToolResult[] = [];
   const delegations: Delegation[] = [];
+  const timedOut = () => new AiError("The demo ran out of time", "tool_loop", "timeout");
+  // A tool that ignores the signal (a stalled database call) must not hold the request open: race it against the deadline.
+  const aborted = new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(timedOut()), { once: true }));
+  aborted.catch(() => undefined);
   for (const d of script.delegations) {
     const specialist = opts.spec.specialists.find((s) => s.name === d.agent);
     if (!specialist) throw new Error(`Demo team script names an unknown specialist "${d.agent}".`);
     const tools = new Map(opts.wrap(specialist.tools, d.agent).map((t) => [t.name, t]));
     const startCall = opts.recorded().length;
     for (const step of d.steps) {
+      if (signal.aborted) throw timedOut();
       const call = typeof step.call === "function" ? step.call(results) : step.call;
       const tool = tools.get(call.name);
       const parsed = tool?.args.safeParse(call.args);
@@ -235,8 +240,9 @@ export async function runDemoTeam<T>(opts: {
         throw new Error(`Demo team script: "${call.name}" is not a valid call for the ${d.agent} specialist.`);
       }
       try {
-        results.push({ name: call.name, ok: true, data: await tool.run(parsed.data, { signal }) });
-      } catch {
+        results.push({ name: call.name, ok: true, data: await Promise.race([tool.run(parsed.data, { signal }), aborted]) });
+      } catch (err) {
+        if (signal.aborted) throw err instanceof AiError ? err : timedOut();
         results.push({ name: call.name, ok: false, data: null }); // recorded with its (safe) error by the wrapper
       }
     }

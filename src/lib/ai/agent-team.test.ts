@@ -6,7 +6,7 @@ import { resetEnvCache } from "@/lib/env";
 import { HangingLlm, type StubResult, TeamScriptedLlm, quotaError, reportText } from "../../../test/ai-stub-llm";
 import { QUESTION_MAX_LLM_CALLS, TEAM_MAX_LLM_CALLS, runAgent } from "./agent";
 import { screenReport, teamFigureGate } from "./agent-team";
-import { defineTool } from "./index";
+import { defineTool, generate } from "./index";
 
 const baseEnv = { DATABASE_URL: "postgres://unused", BETTER_AUTH_SECRET: "x".repeat(32), LOG_LEVEL: "error" };
 function setEnv(extra: Record<string, string>) {
@@ -481,4 +481,30 @@ describe("the demo team script", () => {
     expect(output.figures.every((f) => attribution[f.call])).toBe(true);
     expect(new Set(Object.values(attribution))).toEqual(new Set(["pricing", "migration"]));
   });
+});
+
+describe("a tool that never resolves", () => {
+  const stalled = defineTool({ name: "getFootprint", description: "app", args: z.strictObject({ app: z.string().max(40) }), kind: "read", run: () => new Promise(() => undefined) });
+  const stalledTools = [stalled, getPrices, priceScenario, migrationBreakEven];
+
+  it("the team demo ends within its 4 s window with a timeout error, not a hang", async () => {
+    const started = Date.now();
+    const spec = { ...team, specialists: [{ ...team.specialists[0], tools: [stalled, getPrices, priceScenario] }, team.specialists[1]] };
+    await expect(runAgent(request({ tools: stalledTools, team: spec }))).rejects.toMatchObject({ name: "AiError", kind: "tool_loop", status: "timeout" });
+    expect(Date.now() - started).toBeLessThan(5500);
+  }, 10_000);
+
+  it("the single-agent demo loop ends within its window too", async () => {
+    const started = Date.now();
+    await expect(runAgent(request({ tools: stalledTools, team: undefined }))).rejects.toMatchObject({ name: "AiError", kind: "tool_loop" });
+    expect(Date.now() - started).toBeLessThan(5500);
+  }, 10_000);
+
+  it("generate() that sent live requests and then fails in its demo still reports requestsSent on the error it throws", async () => {
+    live();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 400 })));
+    const err = await generate({ task: "scaling-advice", system: "s", prompt: "q", schema: adviceOutput, tools: stalledTools, maxSteps: 4, deadlineMs: 1500, demoContext: { app: "helpdesk" } }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: "AiError", kind: "tool_loop" });
+    expect((err as { requestsSent?: number }).requestsSent).toBe(1);
+  }, 10_000);
 });

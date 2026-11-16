@@ -393,6 +393,24 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
       expect(await dailySum()).toBe(3);
     });
 
+    it("a stalled demo after live requests: the error is a timeout inside the window, and the units settle on the requests sent", async () => {
+      await resetDay();
+      setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key" });
+      const fetchMock = vi.fn(async () => new Response("{}", { status: 400 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const stalled = { ...tools.advisorTools({ id: A.id, role: "user" }).find((t) => t.name === "getFootprint")!, run: () => new Promise<never>(() => undefined) };
+      const others = tools.advisorTools({ id: A.id, role: "user" }).filter((t) => t.name !== "getFootprint");
+      // 6 s question: the single agent gets none of it, generate() sends one request that fails, then its own demo stalls
+      const started = Date.now();
+      const failing = new FailingLlm();
+      await expect(agent.runAgent(reqFor(A.id, 50, { tools: [stalled, ...others], deadlineMs: 6000 }), { innerLlm: failing })).rejects.toMatchObject({ name: "AiError", kind: "tool_loop" });
+      expect(Date.now() - started).toBeLessThan(6500);
+      expect(fetchMock.mock.calls.length).toBe(1);
+      // settled on every request sent (the ADK model's, if it got one out before its 1 ms deadline, plus generate()'s), the rest released
+      expect(await dailySum()).toBe(failing.calls + 1);
+      expect(await rateCount(A.id)).toBe(0); // nothing was delivered: the attempt is given back
+    }, 15_000);
+
     it("a 503 then 200 on every generate() step never takes the question past its reservation: requests sent <= 14, settled == requests sent", async () => {
       await resetDay();
       setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key" });

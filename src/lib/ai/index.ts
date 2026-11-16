@@ -165,10 +165,15 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
   try {
     return done(await runToolLoop(loop, provider, trace), provider.name, provider.model, false);
   } catch (err) {
-    if (err instanceof AiError) {
-      if (trace.liveResponses) err.liveCalls = trace.liveResponses;
-      err.requestsSent = loop.requests.sent;
-    }
+    // What this call cost, carried on whatever error finally leaves it (also when the demo then fails too).
+    const annotate = <E>(e: E): E => {
+      if (e !== null && typeof e === "object") {
+        if (trace.liveResponses && e instanceof AiError) e.liveCalls = trace.liveResponses;
+        (e as { requestsSent?: number }).requestsSent = loop.requests.sent;
+      }
+      return e;
+    };
+    annotate(err);
     const kind = err instanceof AiError ? err.kind : "provider";
     const status = err instanceof AiError ? err.status : undefined;
     log.warn("ai.tool_loop.failed", { task: req.task, provider: provider.name, model: provider.model, kind, status, steps: trace.steps, calls: trace.calls });
@@ -178,7 +183,7 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
       return demo().catch((demoErr) => {
         // Running out of the shared deadline in the demo path is still a tool_loop timeout; anything
         // else (e.g. no demo script) is less useful than the provider error that got us here.
-        throw demoErr instanceof AiError && demoErr.kind === "tool_loop" ? demoErr : err;
+        throw annotate(demoErr instanceof AiError && demoErr.kind === "tool_loop" ? demoErr : err);
       });
     }
     throw err;

@@ -624,7 +624,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
         return done(result.data, "generate", result.provider, result.model, 0, fallbackReason);
       } catch (err) {
         if (err instanceof AiError && err.kind === "input_rejected") throw err;
-        const sent = err instanceof AiError ? (err.requestsSent ?? 0) : 0;
+        const sent = (err as { requestsSent?: number } | null)?.requestsSent ?? 0;
         charge(sent);
         failed("generate", err, { llmCalls: sent, quota: null });
       }
