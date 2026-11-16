@@ -30,6 +30,10 @@ const schema = z.object({
   // Both are optional: without the token only an admin can refresh; without the key Google Cloud shows "prices unavailable".
   COST_SCALER_REFRESH_TOKEN: z.string().min(16).optional(),
   COST_SCALER_GCP_PRICING_API_KEY: z.string().min(8).optional(),
+  // Cost Scaler advisor. The free daily request allowance of the shared Gemini key (a deliberately low placeholder: set the
+  // key's real limit) and the share of it app 31 may use. Together they give ADVISOR_DAILY_MODEL_CALLS.
+  GEMINI_DAILY_REQUESTS: z.coerce.number().int().positive().max(1_000_000).default(200),
+  ADVISOR_GEMINI_SHARE: z.coerce.number().gt(0).max(1).default(0.25),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -54,6 +58,12 @@ export function env(): Env {
     cached = parsed.data;
   }
   return cached;
+}
+
+/** Model calls the advisor may make per UTC day: floor(GEMINI_DAILY_REQUESTS x ADVISOR_GEMINI_SHARE). 50 by default. */
+export function advisorDailyModelCalls(): number {
+  const e = env();
+  return Math.floor(e.GEMINI_DAILY_REQUESTS * e.ADVISOR_GEMINI_SHARE);
 }
 
 /** For tests only. */

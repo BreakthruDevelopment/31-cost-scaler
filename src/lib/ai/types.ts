@@ -57,6 +57,15 @@ export type DemoToolScript = {
   final: (results: DemoToolResult[]) => unknown;
 };
 
+/**
+ * A scripted team run (demo mode): each delegation is one specialist making its tool calls in order, over the real tools.
+ * A step's `call` function sees every result so far, across delegations. `final` writes the coordinator's answer.
+ */
+export type DemoTeamScript = {
+  delegations: { agent: string; steps: { call: DemoToolCall | ((previous: DemoToolResult[]) => DemoToolCall) }[] }[];
+  final: (results: DemoToolResult[]) => unknown;
+};
+
 type ToolFields = {
   /** The allow-list for this call: a model can only invoke tools listed here. Max 10. */
   tools: AnyToolDef[];
@@ -134,6 +143,8 @@ export type ToolStepResult = {
 export class AiError extends Error {
   /** Set by a tool loop that failed after live model replies arrived (they cost quota even though the answer failed). */
   liveCalls?: number;
+  /** A quota error only: whether the provider's message named a per-day limit ("day") or something else ("minute"). */
+  quotaScope?: "day" | "minute";
   constructor(
     message: string,
     readonly kind: "quota" | "provider" | "invalid_output" | "input_rejected" | "tool_loop",

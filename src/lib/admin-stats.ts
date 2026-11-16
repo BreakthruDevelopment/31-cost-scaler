@@ -3,10 +3,8 @@ import { count, desc, eq, sql } from "drizzle-orm";
 import { type Actor } from "@/lib/auth/rbac";
 import { assertCan } from "@/lib/access";
 import { db, schema } from "@/lib/db";
+import { advisorDailyModelCalls } from "@/lib/env";
 import { dailyCount } from "@/lib/usage";
-
-/** App-wide advisor budget per UTC day (spec: `AI_DAILY_CAP` 200). */
-export const AI_DAILY_CAP = Number(process.env.AI_DAILY_CAP) > 0 ? Number(process.env.AI_DAILY_CAP) : 200;
 
 /**
  * What an admin may see: counts, refresh status and the profile-drift flag. Never a scenario, a result, an advice
@@ -47,7 +45,8 @@ export async function adminStats(actor: Actor) {
     scenarios: scenarios.n,
     savedResults: results.n,
     advice: adviceRows.n,
-    advisor: { today: advisorToday, dailyCap: AI_DAILY_CAP },
+    // Model calls used today (reserved, then settled on requests sent) against ADVISOR_DAILY_MODEL_CALLS.
+    advisor: { today: advisorToday, dailyCap: advisorDailyModelCalls(), dailyModelCalls: advisorDailyModelCalls() },
     footprintApps: footprint.n,
     prices: { active: prices.n, quarantined: quarantined.n },
     refresh: latest,

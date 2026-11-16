@@ -17,7 +17,7 @@ import { CLOUD_ORDER, type Cloud, type PriceTable } from "@/lib/pricing/types";
 import { getScenario } from "@/lib/scenarios";
 
 /**
- * The advisor's four tools. Read-only, and closed over the acting user: the model supplies arguments, never who is
+ * The advisor's four tools (split between the pricing and migration specialists by `pricingTools`/`migrationTools`). Read-only, and closed over the acting user: the model supplies arguments, never who is
  * asking. Every result is small (dollars to the cent, never the whole pricing result) so it can be cited by path, and
  * carries no free text the user or a scenario owner wrote (scenario names stay out), only codes and our own wording.
  * An unknown or someone else's scenario id is the same `ToolError("not found")`.
@@ -36,7 +36,9 @@ function toToolError(err: unknown): never {
   throw err;
 }
 
-export function advisorTools(actor: Actor): AnyToolDef[] {
+type ToolSet = { getFootprint: AnyToolDef; getPrices: AnyToolDef; priceScenario: AnyToolDef; migrationBreakEven: AnyToolDef };
+
+function buildTools(actor: Actor): ToolSet {
   let tablePromise: Promise<PriceTable> | null = null;
   const table = () => (tablePromise ??= loadPriceTable(actor));
 
@@ -149,5 +151,29 @@ export function advisorTools(actor: Actor): AnyToolDef[] {
     },
   });
 
-  return [getFootprint, getPrices, priceScenario, migrationBreakEven];
+  return { getFootprint, getPrices, priceScenario, migrationBreakEven };
+}
+
+/** All four tools: the single agent, the `generate()` fallback and the demo script use these. */
+export function advisorTools(actor: Actor): AnyToolDef[] {
+  const t = buildTools(actor);
+  return [t.getFootprint, t.getPrices, t.priceScenario, t.migrationBreakEven];
+}
+
+/** The pricing specialist's tools: footprint, list prices and scenario pricing. */
+export function pricingTools(actor: Actor): AnyToolDef[] {
+  const t = buildTools(actor);
+  return [t.getFootprint, t.getPrices, t.priceScenario];
+}
+
+/** The migration specialist's tools: the move analysis, and the footprint it needs to name the app's clouds. */
+export function migrationTools(actor: Actor): AnyToolDef[] {
+  const t = buildTools(actor);
+  return [t.migrationBreakEven, t.getFootprint];
+}
+
+/** The three sets over one set of tool objects, so the team shares one price-table load per question. */
+export function advisorToolset(actor: Actor): { all: AnyToolDef[]; pricing: AnyToolDef[]; migration: AnyToolDef[] } {
+  const t = buildTools(actor);
+  return { all: [t.getFootprint, t.getPrices, t.priceScenario, t.migrationBreakEven], pricing: [t.getFootprint, t.getPrices, t.priceScenario], migration: [t.migrationBreakEven, t.getFootprint] };
 }
