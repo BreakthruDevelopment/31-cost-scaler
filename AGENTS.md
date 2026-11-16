@@ -29,7 +29,12 @@ The BreakthruDevelopment org holds other, unrelated applications.
 - Next.js (App Router, `src/app`), TypeScript strict, Tailwind with the tokens in `globals.css`.
 - Postgres via Drizzle (`src/lib/db/schema.ts`). Change the schema, then `pnpm db:generate --name <change>`; commit the SQL in `drizzle/`.
 - Auth via Better Auth (`src/lib/auth`). Roles: `user`, `admin`.
-- All model calls go through `generate()` in `src/lib/ai`. Never call a model API directly.
+- All model calls go through `src/lib/ai`: `generate()` for single calls and tool loops, or `runAgent()`
+  (`src/lib/ai/agent.ts`, Google ADK for TypeScript) for agents. Never call a model API, or create an ADK agent,
+  runner or model, outside `src/lib/ai`. `runAgent()` applies the same input caps, daily budget, prompt-injection
+  rule, demo fixture and logging rules as `generate()`; its tools are read-only unless a spec says otherwise.
+  (App 31 only: the template and the playbook keep the `generate()`-only rule until this proves itself.)
+- Node 24.13+ (Dockerfile, CI): `@google/adk` asks for it.
 
 ## How code must be written
 

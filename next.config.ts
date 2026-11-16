@@ -8,7 +8,9 @@ const nextConfig: NextConfig = {
   // opt in later if it has mostly public, cacheable pages.
   cacheComponents: false,
   // Keep the Postgres driver out of the bundle; it is loaded at runtime.
-  serverExternalPackages: ["postgres"],
+  // ADK stays out of the bundle too: it loads optional peers (express, A2A, Vertex) lazily and fails to bundle without them.
+  // It is imported with await import() in src/lib/ai/agent.ts, so only a request that asks the advisor loads it.
+  serverExternalPackages: ["postgres", "@google/adk", "@google/genai"],
   turbopack: {
     rules: {
       "*.css": {

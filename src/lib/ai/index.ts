@@ -29,7 +29,7 @@ export { embed, liveEmbedModel, EMBED_DIMS, DEMO_EMBED_MODEL } from "./embed";
 export const MAX_PROMPT_CHARS = 12_000;
 
 // Model names change often; set AI_MODEL per app and confirm it on Day 0.
-const DEFAULT_MODELS = {
+export const DEFAULT_MODELS = {
   // The lighter alias: faster and more free-tier headroom; the full Flash alias timed out or 503'd
   // on 600-token JSON answers in app 2's first live deploy.
   gemini: "gemini-flash-lite-latest",
@@ -151,7 +151,7 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
     const latencyMs = Date.now() - started;
     // Tool names, outcome codes and timings only: never arguments, results, messages or prompts.
     log.info("ai.tool_loop", { task: req.task, provider: name, model, demo, outcome: "ok", steps: trace.steps, calls: trace.calls, latencyMs });
-    return { data, provider: name, model, demo, latencyMs };
+    return { data, provider: name, model, demo, latencyMs, liveCalls: trace.liveResponses ?? 0 };
   };
   const demo = async () => {
     trace.steps = 0;
@@ -163,6 +163,7 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
   try {
     return done(await runToolLoop(loop, provider, trace), provider.name, provider.model, false);
   } catch (err) {
+    if (err instanceof AiError && trace.liveResponses) err.liveCalls = trace.liveResponses;
     const kind = err instanceof AiError ? err.kind : "provider";
     const status = err instanceof AiError ? err.status : undefined;
     log.warn("ai.tool_loop.failed", { task: req.task, provider: provider.name, model: provider.model, kind, status, steps: trace.steps, calls: trace.calls });

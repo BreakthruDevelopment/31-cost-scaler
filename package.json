@@ -16,9 +16,11 @@
     "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.mts",
     "seed:footprint": "tsx scripts/seed-footprint.mts",
     "seed:prices": "tsx scripts/seed-prices.mts",
-    "smoke": "bash scripts/smoke.sh"
+    "smoke": "bash scripts/smoke.sh",
+    "eval:advice": "node --conditions=react-server --import tsx scripts/eval-advice.mts"
   },
   "dependencies": {
+    "@google/adk": "2.5.0",
     "better-auth": "^1.7.15",
     "drizzle-orm": "^0.45.4",
     "next": "16.4.4",
@@ -45,6 +47,6 @@
   },
   "packageManager": "pnpm@10.28.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24.13"
   }
 }

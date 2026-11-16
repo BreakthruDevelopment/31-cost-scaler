@@ -25,7 +25,7 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 export type ToolContext = { signal: AbortSignal };
 
 export type ToolDef<A = unknown, R = unknown> = {
-  /** `^[a-z][a-z0-9_]{0,39}$`; `respond` is reserved for the final answer. */
+  /** `^[a-zA-Z][a-zA-Z0-9_]{0,39}$`; `respond` is reserved for the final answer. */
   name: string;
   description: string;
   /** Validated on every call; the model's JSON Schema is generated from it. */
@@ -89,6 +89,8 @@ export type GenerateResult<T> = {
   /** True when the answer came from recorded demo data instead of a live model. */
   demo: boolean;
   latencyMs: number;
+  /** Tool loops only: live model replies received, even when the answer then came from the demo script. */
+  liveCalls?: number;
 };
 
 export interface AiProvider {
@@ -130,6 +132,8 @@ export type ToolStepResult = {
 };
 
 export class AiError extends Error {
+  /** Set by a tool loop that failed after live model replies arrived (they cost quota even though the answer failed). */
+  liveCalls?: number;
   constructor(
     message: string,
     readonly kind: "quota" | "provider" | "invalid_output" | "input_rejected" | "tool_loop",
