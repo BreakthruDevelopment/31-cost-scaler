@@ -10,7 +10,7 @@ export const metadata: Metadata = { title: "Footprint" };
 export const dynamic = "force-dynamic";
 
 export default async function FootprintPage() {
-  if (!(await publicPageAllowed())) return <RateLimited />;
+  if (!(await publicPageAllowed())) return <RateLimited section="Footprint" retryHref="/footprint" />;
   const data = await loadOverview();
   return (
     <>

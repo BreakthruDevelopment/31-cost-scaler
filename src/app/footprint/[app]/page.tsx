@@ -5,7 +5,9 @@ import { cloudName, formatDate, outgrowsText, perMonth, sourceHost, usd, VERDICT
 import { ListPriceNote, PriceBanners, RateLimited } from "@/components/footprint/notices";
 import { PageIntro, Panel, StatusBadge } from "@/components/ui";
 import { type CloudCost, type MoveOption, loadDetail, publicPageAllowed } from "@/lib/footprint-view";
+import { safeHref } from "@/lib/footprint-calc";
 import { DEFAULT_FOOTPRINT_USAGE } from "@/lib/pricing/footprint";
+import { CONSIDER_MAX_MONTHS, DEFAULT_HOURLY_RATE_USD, MOVE_MAX_MONTHS, MOVE_MIN_SAVING_MICROS } from "@/lib/pricing/move";
 import { TEN_X_PRESET } from "@/lib/pricing/presets";
 import { footprintName } from "@/lib/pricing/spec";
 
@@ -101,9 +103,13 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
               <ul className="mt-1 space-y-1">
                 {c.sources.map((s) => (
                   <li key={s.url} className="min-w-0 [overflow-wrap:anywhere]">
-                    <a href={s.url} rel="noopener noreferrer" className="text-accent hover:underline">
-                      {sourceHost(s.url)}
-                    </a>{" "}
+                    {safeHref(s.url) ? (
+                      <a href={safeHref(s.url)!} rel="noopener noreferrer" className="text-accent hover:underline">
+                        {sourceHost(s.url)}
+                      </a>
+                    ) : (
+                      <span>{sourceHost(s.url)}</span>
+                    )}{" "}
                     <span className="text-muted">({s.fetched === "checked in" ? "allowance checked in" : `fetched ${formatDate(s.fetched)}`})</span>
                   </li>
                 ))}
@@ -184,7 +190,7 @@ export default async function FootprintAppPage({ params }: PageProps<"/footprint
   const { app } = await params;
   const name = footprintName.safeParse(app);
   if (!name.success) notFound();
-  if (!(await publicPageAllowed())) return <RateLimited />;
+  if (!(await publicPageAllowed())) return <RateLimited section="Footprint" retryHref={`/footprint/${name.data}`} />;
   const d = await loadDetail(name.data);
   if (!d) notFound();
   const { row } = d;
@@ -214,7 +220,7 @@ export default async function FootprintAppPage({ params }: PageProps<"/footprint
       </Panel>
       <Panel title="Should this app move?">
         <p className="mb-4 text-sm text-muted">
-          Priced at the 10x users preset ({TEN_X_PRESET.users.mau.toLocaleString("en-US")} users a month). The verdict is computed from list prices, at $100 an hour of migration effort: move when it pays back in 6 months or less and saves at least $10 a month, consider within 18 months, otherwise stay.
+          Priced at the 10x users preset ({TEN_X_PRESET.users.mau.toLocaleString("en-US")} users a month). The verdict is computed from list prices, at ${DEFAULT_HOURLY_RATE_USD} an hour of migration effort: move when it pays back in {MOVE_MAX_MONTHS} months or less and saves at least {usd(Number(MOVE_MIN_SAVING_MICROS))} a month, consider within {CONSIDER_MAX_MONTHS} months, otherwise stay.
         </p>
         {d.moves.length === 0 ? (
           <div className="rounded-card bg-background px-4 py-6 text-center text-sm text-muted">

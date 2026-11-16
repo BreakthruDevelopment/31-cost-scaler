@@ -1,7 +1,7 @@
 import { formatUsd } from "@/lib/pricing/money";
 import { CLOUD_LABEL, type Cloud } from "@/lib/pricing/types";
-import type { OutgrowsFreeTier } from "@/lib/pricing/footprint";
-import type { Verdict } from "@/lib/pricing/move";
+import { MAX_MAU, type OutgrowsFreeTier } from "@/lib/pricing/footprint";
+import { CONSIDER_MAX_MONTHS, MOVE_MAX_MONTHS, MOVE_MIN_SAVING_MICROS, type Verdict } from "@/lib/pricing/move";
 import type { Status } from "@/components/ui";
 
 export const cloudName = (c: Cloud) => CLOUD_LABEL[c];
@@ -17,15 +17,15 @@ export const perMonth = (micros: number) => `${usd(micros)}/mo`;
 
 export function outgrowsText(o: OutgrowsFreeTier | null, requestsPerUser: number): string {
   if (!o) return "Not available";
-  if (o.status === "free_through_max") return "Still free at 10,000,000 users";
+  if (o.status === "free_through_max") return `Still free at ${MAX_MAU.toLocaleString("en-US")} users`;
   if (o.status === "already_paying") return "Already past it: a shared part has no allowance";
   return `${o.mau.toLocaleString("en-US")} users a month (${requestsPerUser} requests each)`;
 }
 
 export const VERDICT: Record<Verdict, { status: Status; label: string; text: string }> = {
-  move: { status: "live", label: "Move", text: "Pays back within 6 months and saves at least $10 a month." },
-  consider: { status: "building", label: "Consider", text: "Pays back within 18 months." },
-  stay: { status: "not-started", label: "Stay", text: "The saving does not cover the effort within 18 months." },
+  move: { status: "live", label: "Move", text: `Pays back within ${MOVE_MAX_MONTHS} months and saves at least ${formatUsd(MOVE_MIN_SAVING_MICROS)} a month.` },
+  consider: { status: "building", label: "Consider", text: `Pays back within ${CONSIDER_MAX_MONTHS} months.` },
+  stay: { status: "not-started", label: "Stay", text: `The saving does not cover the effort within ${CONSIDER_MAX_MONTHS} months.` },
   blocked: { status: "blocked", label: "Blocked", text: "Something this app uses cannot run there." },
   not_enough_data: { status: "not-started", label: "Not enough data", text: "A price this comparison needs is not listed." },
 };

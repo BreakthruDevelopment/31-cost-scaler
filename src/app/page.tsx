@@ -13,9 +13,9 @@ const steps = [
 ];
 
 export default async function Home() {
-  if (!(await publicPageAllowed())) return <RateLimited />;
+  if (!(await publicPageAllowed())) return <RateLimited section="Cloud Cost Scaler" retryHref="/" />;
   const data = await loadOverview();
-  const counted = data.totals.filter((t) => t.counted > 0);
+  const counted = data.totals.filter((t) => t.state === "priced");
   const list = counted.reduce((s, t) => s + t.listMicros, 0);
   const credit = counted.reduce((s, t) => s + t.creditMicros, 0);
   const net = counted.reduce((s, t) => s + t.netMicros, 0);
@@ -51,14 +51,19 @@ export default async function Home() {
               <StatTile value={usd(credit)} label="Free-tier credit" tone="live" />
               <StatTile value={perMonth(net)} label="Net, after always-free allowances" />
             </StatGrid>
+            {counted.length < data.totals.filter((t) => t.state !== "no_apps").length && (
+              <p className="mb-4 text-sm text-muted">The totals above leave out clouds with no complete prices (shown below); they are never counted as $0.</p>
+            )}
             <ul aria-label="Cost by cloud" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {data.totals.map((t) => (
                 <li key={t.cloud} className="min-w-0 rounded-card border border-border bg-surface p-4">
                   <h3 className="font-mono text-sm font-medium">{cloudName(t.cloud)}</h3>
-                  {t.unavailable ? (
+                  {t.state === "unavailable" ? (
                     <p className="mt-2 text-sm text-muted">Prices unavailable.</p>
-                  ) : t.apps === 0 ? (
+                  ) : t.state === "no_apps" ? (
                     <p className="mt-2 text-sm text-muted">No apps run here.</p>
+                  ) : t.state === "unpriced" ? (
+                    <p className="mt-2 text-sm text-muted">No complete prices for the {t.apps} app{t.apps === 1 ? "" : "s"} here, so no total is shown.</p>
                   ) : (
                     <dl className="mt-2 space-y-1 text-sm">
                       <div className="flex justify-between gap-3">

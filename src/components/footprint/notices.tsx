@@ -5,11 +5,11 @@ import { STALE_AFTER_HOURS } from "@/lib/footprint-view";
 import { cloudName, formatDate } from "./format";
 
 /** Shown instead of the page when this IP has used its 60 requests a minute. */
-export function RateLimited() {
+export function RateLimited({ section, retryHref }: { section: string; retryHref: string }) {
   return (
     <div role="alert">
-      <PageIntro section="Footprint" title="Too many requests." description="You have asked for this page a lot in the last minute. Wait about a minute, then try again." />
-      <Link href="/footprint" className={buttonSecondary}>
+      <PageIntro section={section} title="Too many requests." description="You have asked for this page a lot in the last minute. Wait about a minute, then try again." />
+      <Link href={retryHref} className={buttonSecondary}>
         Try again
       </Link>
     </div>
