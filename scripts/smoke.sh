@@ -23,6 +23,24 @@ for path in / /sign-in; do
 done
 pass "pages render inside the shared shell"
 
+# Public pages: landing, footprint and an app page (CI seeds the footprint and the price fixtures). Text is matched with
+# React's <!-- --> markers removed.
+text_of() { sed 's/<!-- -->//g'; }
+home=$(curl -fsS "$BASE_URL/" | text_of) || fail "landing page did not render"
+echo "$home" | grep -q 'List price estimate' || fail "landing page is missing the list price estimate label"
+echo "$home" | grep -q 'The portfolio today' || fail "landing page is missing the portfolio sample"
+fp=$(curl -fsS "$BASE_URL/footprint" | text_of) || fail "/footprint did not render"
+echo "$fp" | grep -q 'List price estimate' || fail "/footprint is missing the list price estimate label"
+echo "$fp" | grep -q 'Outgrows free tier at' || fail "/footprint has no 'outgrows free tier at' line (is the footprint seeded?)"
+echo "$fp" | grep -q '/footprint/build-tracker' || fail "/footprint does not link to build-tracker"
+app=$(curl -fsS "$BASE_URL/footprint/build-tracker" | text_of) || fail "/footprint/build-tracker did not render"
+echo "$app" | grep -q 'Should this app move?' || fail "app page is missing 'Should this app move?'"
+echo "$app" | grep -q 'Free-tier credit' || fail "app page is missing the free-tier credit line"
+echo "$app" | grep -Eq 'Move|Consider|Stay|Blocked|Not enough data' || fail "app page shows no move verdict"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/footprint/no-such-app")" = "404" ] || fail "an unknown footprint app should be 404"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/footprint/Bad_Name")" = "404" ] || fail "an invalid footprint app name should be 404"
+pass "public landing, footprint and app pages render with their key figures"
+
 for path in /dashboard /admin; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL$path")
   [ "$code" = "307" ] || fail "signed-out $path should redirect (307), got $code"
