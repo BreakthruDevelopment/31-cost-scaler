@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { fixtureRowsWithIds } from "../../../test/fixtures/pricing-table";
+import { finishCloud, type Work } from "./engine";
 import { type FootprintApp, outgrowsFreeTier, priceFootprintApp, priceFootprintAppEverywhere } from "./footprint";
 import { costMicros, decimalToPpm, formatUsd, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
 import { CONSIDER_MAX_MONTHS, MOVE_MIN_SAVING_MICROS, blockersFor, migrationBreakEven, verdictFor } from "./move";
@@ -468,5 +469,43 @@ describe("rows from the database shape", () => {
   it("accepts bigint micros", () => {
     const rows: PriceRow[] = ROWS.map((r) => ({ ...r, usdMicros: BigInt(r.usdMicros) }));
     expect(priceScenario(BASE_SPEC, buildPriceTable(rows))).toEqual(priceScenario(BASE_SPEC, T));
+  });
+});
+
+describe("engine follow-ups from the 31.3 review", () => {
+  const dbSpec = (database: ScenarioSpec["redundancy"]["database"]) => spec({ redundancy: { ...BASE_SPEC.redundancy, database } });
+  const dbCredit = (database: ScenarioSpec["redundancy"]["database"]) => one(dbSpec(database), "aws", { conditionalCredits: true }).creditLines.find((c) => c.id === "credit.aws.database")?.micros;
+
+  it("x86 and arm64 Lambda share one 400,000 GB-second pool", () => {
+    const work = (id: string, skuKey: string): Work => ({ id, component: "containers", label: id, detail: "", snap: null, notes: [], status: "priced", micros: 0n, rows: [], usage: [{ skuKey, unit: "gb_hour", qty: toPpm(100) }] });
+    const { price } = finishCloud("aws", [work("x86", "serverless.lambda.gb"), work("arm", "serverless.lambda.gb.arm64")], T);
+    // 100 GB-hours on x86 at $0.06, then only the 11 left of the 111 on arm64 at $0.048 (not another 100).
+    expect(price.creditLines.map((c) => c.micros)).toEqual([-6_000_000, -528_000]);
+    expect(price.creditMicros).toBe(-6_528_000);
+  });
+  it("a single-AZ 12-month database allowance does not cover the second copy of a multi-AZ database", () => {
+    const single = dbCredit("single");
+    expect(single).toBe(-13_980_000); // the whole single-AZ line: 730 h x $0.016 + 20 GB x $0.115
+    expect(dbCredit("multi_az")).toBe(single); // the multi-AZ line is twice that; only one copy is free
+    expect(dbCredit("multi_region")).toBe(single);
+    const multi = one(dbSpec("multi_az"), "aws", { conditionalCredits: true });
+    expect(multi.creditMicros).toBeGreaterThan(-multi.lines.find((l) => l.id === "database")!.micros!);
+  });
+  it("gives a like-for-like saving on a move to Oracle, informational only", () => {
+    const apps: FootprintApp[] = [{ name: "plain", clouds: ["aws"], storage: false, secretCount: 0 }];
+    const r = migrationBreakEven({ app: apps[0], apps, from: "aws", to: "oci", table: T, scenario: TEN_X_PRESET });
+    expect(r.verdict).toBe("not_enough_data");
+    expect(r.monthlySavingMicros).toBeNull();
+    const l = r.likeForLike!;
+    expect(l.leftOut.length).toBeGreaterThan(0);
+    expect(l.leftOut.every((x) => x.notListedOn.includes("oci") && !x.notListedOn.includes("aws"))).toBe(true);
+    expect(l.savingMicros).toBe(l.fromMicros - l.toMicros);
+    expect(l.label).toMatch(/^compared without .*not listed on Oracle Cloud/);
+    // The verdict inputs are untouched by it.
+    expect(r.breakEvenMonths).toBeNull();
+  });
+  it("has no like-for-like figure when both sides are complete", () => {
+    const apps: FootprintApp[] = [{ name: "plain", clouds: ["aws"], storage: false, secretCount: 0 }];
+    expect(migrationBreakEven({ app: apps[0], apps, from: "aws", to: "gcp", table: T, scenario: TEN_X_PRESET }).likeForLike).toBeNull();
   });
 });

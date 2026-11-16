@@ -176,7 +176,7 @@ function databaseLines({ spec, cloud, table }: Run): Work[] {
         detail: `${size.label}${multiple > 1n ? ` x ${multiple}` : ""}${redText(red)}, ${d.storageGb} GB, 730 h`,
         snap,
         notes,
-        instance: { family: "postgres", vcpu, memGb: mem, count: multiple * (red === "single" ? 1n : 2n), hoursPerInstance: HOURS_PER_MONTH_PPM },
+        instance: { family: "postgres", vcpu, memGb: mem, count: multiple * (red === "single" ? 1n : 2n), hoursPerInstance: HOURS_PER_MONTH_PPM, copies: red === "single" ? 1n : 2n },
       },
       parts,
     ),
