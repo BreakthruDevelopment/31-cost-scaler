@@ -4,6 +4,7 @@ import {
   type AiProvider,
   type AnyToolDef,
   type DemoToolResult,
+  type RequestBudget,
   type ToolCall,
   type ToolDeclaration,
   type ToolDef,
@@ -78,6 +79,8 @@ type LoopRequest<T> = {
   deadlineAt: number;
   history: ToolHistoryItem[];
   demoContext?: unknown;
+  /** Counts the provider's HTTP attempts for the loop (retries included) and caps them. */
+  requests?: RequestBudget;
   /** Result of `prepareTools`; generate() prepares once, up front, so a bad definition is a programmer error. */
   prepared?: ReturnType<typeof prepareTools>;
 };
@@ -237,6 +240,7 @@ export async function runToolLoop<T>(req: LoopRequest<T>, provider: AiProvider, 
         forceRespond: forced,
         maxOutputTokens: req.maxOutputTokens,
         deadlineAt,
+        requests: req.requests,
       });
       trace.liveResponses = (trace.liveResponses ?? 0) + 1;
     } catch (err) {

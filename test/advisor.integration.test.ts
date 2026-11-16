@@ -380,8 +380,8 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
       const failing = new FailingLlm();
       await expect(agent.runAgent(reqFor(A.id, 50), { innerLlm: failing })).rejects.toMatchObject({ name: "AiError" });
       expect(await rateCount(A.id)).toBe(0);
-      // one ADK request and one generate() request went out, answered or not: 2 of the 14 reserved are used, 12 go back
-      expect(await dailySum()).toBe(2);
+      // one ADK request and generate()'s 503 plus its retry went out, answered or not: 3 of the 14 reserved are used, 11 go back
+      expect(await dailySum()).toBe(3);
     });
 
     it("units settle on requests sent: a live model that answered unusably costs its requests; the attempt itself is still given back", async () => {
@@ -390,7 +390,25 @@ describe.skipIf(!url)("scaling advisor (Postgres)", () => {
       vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
       await expect(agent.runAgent(reqFor(A.id, 50), { innerLlm: new ScriptedLlm([], () => "not json") })).rejects.toMatchObject({ name: "AiError" });
       expect(await rateCount(A.id)).toBe(0);
-      expect(await dailySum()).toBe(2);
+      expect(await dailySum()).toBe(3);
+    });
+
+    it("a 503 then 200 on every generate() step never takes the question past its reservation: requests sent <= 14, settled == requests sent", async () => {
+      await resetDay();
+      setEnv({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key" });
+      let n = 0;
+      const fetchMock = vi.fn(async () =>
+        n++ % 2 === 0 ? new Response("{}", { status: 503 }) : new Response(JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "getFootprint", args: { app: "ad4-plain" } } }] } }] }), { status: 200 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      // the single agent uses its 6 requests; generate() gets the 8 left, and its 6 steps would send 12
+      const adk = new ScriptedLlm(Array.from({ length: 20 }, () => ({ name: "getFootprint", args: { app: "ad4-plain" } })), () => "never");
+      const result = await agent.runAgent(reqFor(A.id, 50), { innerLlm: adk });
+      expect(adk.turns).toBe(6);
+      expect(fetchMock.mock.calls.length).toBe(8);
+      expect(result.requestsSent).toBe(14);
+      expect(await dailySum()).toBe(result.requestsSent);
+      expect(await rateCount(A.id)).toBe(1); // a demo answer was delivered: the attempt is kept
     });
 
     it("units for generate(): a live reply and then a failure count both requests, whether it fell back to its own demo or threw", async () => {

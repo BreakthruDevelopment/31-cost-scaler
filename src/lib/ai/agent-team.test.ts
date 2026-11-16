@@ -426,6 +426,25 @@ describe("the fallback chain", () => {
     expect(result.calls.map((c) => [c.id, c.name, c.agent])).toEqual([["c1", "getFootprint", "pricing"], ["c2", "priceScenario", "pricing"], ["c3", "migrationBreakEven", "migration"]]);
   });
 
+  it("generate() counts every HTTP attempt: a 503 retried to a 200 is two requests, and none is sent past the question's 14", async () => {
+    live();
+    let n = 0;
+    // every step: a 503, then (on the retry) a 200 asking for another tool call, so the loop never answers
+    const fetchMock = vi.fn(async () =>
+      n++ % 2 === 0 ? new Response("{}", { status: 503 }) : new Response(JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "getFootprint", args: { app: "helpdesk" } } }] } }] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const llm = new TeamScriptedLlm({ ...badTeam, single: () => ({ call: { name: "getFootprint", args: { app: "helpdesk" } } }) });
+    const result = await runAgent<AdviceOutput>(request(), { innerLlm: llm });
+    // team 1 request, single agent 6 (its cap), leaving 7 for generate(): its 6 steps would take 12 attempts
+    expect(llm.requests.length).toBe(7);
+    expect(fetchMock.mock.calls.length).toBe(7);
+    expect(result.requestsSent).toBe(14);
+    expect(result.requestsSent).toBeLessThanOrEqual(QUESTION_MAX_LLM_CALLS);
+    expect(result.attempts.at(-1)).toEqual({ engine: "generate", llmCalls: 7, outcome: "provider" });
+    expect(result.engine).toBe("demo");
+  });
+
   it("with demo fallback off, a chain that fails everywhere throws", async () => {
     live({ AI_FALLBACK_TO_DEMO: "false" });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));

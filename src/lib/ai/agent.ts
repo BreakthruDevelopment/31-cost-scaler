@@ -593,8 +593,8 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
     const steps = Math.min(maxLlmCalls, 6, remainingCalls());
     if (fallbackReason !== "quota" && (fallbackReason === null || remainingMs >= (req.team ? MIN_GENERATE_AFTER_TEAM_MS : MIN_FALLBACK_MS)) && steps >= 2) {
       const attempt: Recorder = { calls: [] };
-      // generate() reports the live replies it received. A request that failed (or fell back to its own demo) went out too
-      // and is not in that count, so it is added: the day's budget is never undercounted.
+      // generate() counts every HTTP attempt it sends (a 5xx retry is a second one) and never sends past the ceiling we give
+      // it: what is left of the question's budget. The day's units are settled on that exact count.
       const charge = (n: number) => (budget.sent = Math.min(budget.reserved, budget.sent + n));
       try {
         const result = await generate({
@@ -604,11 +604,12 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
           schema: req.schema,
           tools: recordTools(req.tools, attempt),
           maxSteps: steps,
+          requestBudget: { max: remainingCalls() },
           deadlineMs: Math.min(MAX_DEADLINE_MS, Math.max(1, remainingMs)),
           maxOutputTokens: req.maxOutputTokens ?? 1200,
           demoContext: req.demoContext,
         });
-        const sent = (result.liveCalls ?? 0) + (result.demo ? 1 : 0);
+        const sent = result.requestsSent ?? 0;
         charge(sent);
         attempts.push({ engine: "generate", llmCalls: sent, outcome: result.demo ? "provider" : "ok" });
         if (result.demo) {
@@ -623,7 +624,7 @@ export async function runAgent<T>(req: AgentRequest<T>, deps: AgentDeps = {}): P
         return done(result.data, "generate", result.provider, result.model, 0, fallbackReason);
       } catch (err) {
         if (err instanceof AiError && err.kind === "input_rejected") throw err;
-        const sent = (err instanceof AiError && err.liveCalls ? err.liveCalls : 0) + 1;
+        const sent = err instanceof AiError ? (err.requestsSent ?? 0) : 0;
         charge(sent);
         failed("generate", err, { llmCalls: sent, quota: null });
       }

@@ -7,7 +7,7 @@
  * deliberately wrong model are skipped. Record the results in the app's run log.
  *
  * It asks FIVE questions (the cases flagged `live`), each through the coordinator-and-specialists team: about 40 model
- * requests against the Gemini key's shared free daily allowance. Run it once, not on a day with a planned demo. It prints the
+ * requests against the Gemini key's shared free daily allowance. Run it once, not on a day with a planned demo. It calls `runAgent` without `limits`, so it BYPASSES the app's daily counter and per-user limits: these requests are not counted in `daily_usage`, only against the key's own allowance. It prints the
  * p50 and the slowest latency (with 5 samples the slowest stands in for p95; the target is p95 <= 45 s).
  */
 import postgres from "postgres";
