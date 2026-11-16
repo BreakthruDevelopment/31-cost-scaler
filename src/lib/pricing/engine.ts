@@ -13,7 +13,10 @@ export type PriceOptions = {
 export type Part = { key: string; unit: PriceUnit; qty: Ppm; optional?: boolean; noAllowance?: boolean };
 export type Usage = { skuKey: string; unit: PriceUnit; qty: Ppm };
 /** What an instance line consumed, so an instance-hour allowance can be matched to it. */
-export type InstanceMeta = { family: "vm" | "postgres"; vcpu: Ppm; memGb: Ppm; count: bigint; hoursPerInstance: Ppm };
+export type InstanceMeta = { family: "vm" | "postgres"; vcpu: Ppm; memGb: Ppm; count: bigint; hoursPerInstance: Ppm;
+  /** Full copies inside `count` (2 for multi-AZ or multi-region). Vendor database allowances cover one single-AZ copy only. */
+  copies?: bigint;
+};
 
 export type LineBase = { id: string; component: LineComponent; label: string; detail: string; snap?: Snap | null; notes?: string[]; instance?: InstanceMeta };
 
@@ -91,6 +94,8 @@ function creditsFor(cloud: Cloud, works: Work[], table: PriceTable, opts: PriceO
   const entries: CreditEntry[] = [];
   let skippedConditional = false;
   const used = new Map<string, Usage>();
+  /** Units left in each shared free pool (tiers naming the same `pool` draw from one quantity). */
+  const pools = new Map<string, Ppm>();
   for (const w of works) {
     if (w.status !== "priced") continue;
     for (const u of w.usage) {
@@ -114,7 +119,11 @@ function creditsFor(cloud: Cloud, works: Work[], table: PriceTable, opts: PriceO
       const u = used.get(tier.skuKey);
       const rows = table.rows(cloud, tier.skuKey);
       if (!u || rows.length === 0 || rows[0].unit !== tier.unit) continue;
-      const allowed = toPpm(tier.quantity) / divisor;
+      let allowed = toPpm(tier.quantity) / divisor;
+      if (tier.pool) {
+        allowed = minBig(allowed, pools.get(tier.pool) ?? allowed);
+        pools.set(tier.pool, allowed - minBig(u.qty, allowed));
+      }
       const cost = tieredCost(rows, minBig(u.qty, allowed));
       push(tier, tier.skuKey, cost.micros, cost.used);
       continue;
@@ -130,7 +139,9 @@ function creditsFor(cloud: Cloud, works: Work[], table: PriceTable, opts: PriceO
       const perInstance = tier.instance.meter === "vcpu_hours" ? mulDivRound(inst.hoursPerInstance, inst.vcpu, PPM) : inst.hoursPerInstance;
       const consumed = perInstance * inst.count;
       if (consumed <= 0n) continue;
-      const covered = minBig(consumed, remaining);
+      // A single-AZ allowance covers one copy only: the second copy of a multi-AZ or multi-region database stays paid.
+      const eligible = tier.instance.singleCopy ? perInstance * (inst.count / (inst.copies ?? 1n)) : consumed;
+      const covered = minBig(eligible, remaining);
       remaining -= covered;
       push(tier, w.id, mulDivRound(w.micros, covered, consumed), w.rows);
     }

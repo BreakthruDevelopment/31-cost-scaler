@@ -39,6 +39,21 @@ export type Blocker = { code: "object_storage_gcp_only" | "oci_no_app_secrets"; 
 export type EffortLine = { label: string; hours: string; micros: number };
 /** List cost per cloud (what the saving uses) and net beside it (display only). */
 export type MoveSide = { from: number; to: number; fromComplete: boolean; toComplete: boolean; fromNet: number; toNet: number };
+/**
+ * Informational only, never read by the verdict: the saving over the lines both clouds list, shown when one side is
+ * missing a price (a move to Oracle with a scenario is always `not_enough_data`, as Oracle lists no database or
+ * identity price). Not exposed to the advisor (it has no entry in `describeFigure`).
+ */
+export type MoveLikeForLike = {
+  label: string;
+  comparedLineIds: string[];
+  leftOut: { id: string; label: string; notListedOn: Cloud[] }[];
+  /** List cost of the compared lines on each side, and from minus to (negative when the new cloud costs more). */
+  fromMicros: number;
+  toMicros: number;
+  savingMicros: number;
+};
+
 export type MoveResult = {
   app: string;
   from: Cloud;
@@ -53,6 +68,8 @@ export type MoveResult = {
   /** Wording for every `net*` figure. */
   netLabel: string;
   monthlySavingMicros: number | null;
+  /** Like-for-like saving on the basis above; null when both sides are complete or no line is listed on both. */
+  likeForLike: MoveLikeForLike | null;
   effort: { lines: EffortLine[]; hours: string; micros: number };
   oneTimeEgress: { gb: string; micros: number | null };
   oneTimeTotalMicros: number | null;
@@ -65,6 +82,27 @@ export type MoveResult = {
   notes: string[];
   priceIds: string[];
 };
+
+type PricedLines = { complete: boolean; lines: readonly { id: string; label: string; status: "priced" | "not_listed"; micros: number | null }[] };
+
+/** The lines priced on both clouds, totalled on list price. Pure integer sums; informational. */
+export function moveLikeForLike(from: Cloud, to: Cloud, a: PricedLines, b: PricedLines): MoveLikeForLike | null {
+  if (a.complete && b.complete) return null;
+  const priced = (p: PricedLines, id: string) => p.lines.some((l) => l.id === id && l.status === "priced");
+  const all = [...a.lines, ...b.lines];
+  const ids = [...new Set(all.map((l) => l.id))];
+  const common = ids.filter((id) => priced(a, id) && priced(b, id));
+  if (common.length === 0) return null;
+  const sum = (p: PricedLines) => p.lines.filter((l) => common.includes(l.id)).reduce((t, l) => t + (l.micros ?? 0), 0);
+  const sides: [Cloud, PricedLines][] = [[from, a], [to, b]];
+  const leftOut = ids
+    .filter((id) => !common.includes(id))
+    .map((id) => ({ id, label: all.find((l) => l.id === id)?.label ?? id, notListedOn: sides.filter(([, p]) => !priced(p, id)).map(([c]) => c) }));
+  const fromMicros = sum(a);
+  const toMicros = sum(b);
+  const label = `compared without ${leftOut.map((l) => `${l.label}: not listed on ${l.notListedOn.map((c) => CLOUD_LABEL[c]).join(", ")}`).join("; ")}`;
+  return { label, comparedLineIds: common, leftOut, fromMicros, toMicros, savingMicros: fromMicros - toMicros };
+}
 
 export function blockersFor(app: FootprintApp, to: Cloud): Blocker[] {
   const out: Blocker[] = [];
@@ -186,6 +224,7 @@ export function migrationBreakEven(input: MoveInput): MoveResult {
     atScenario: scenFrom && scenTo ? side(scenFrom, scenTo) : null,
     netLabel: nowFrom.netLabel,
     monthlySavingMicros: complete ? toSafe(saving) : null,
+    likeForLike: moveLikeForLike(from, to, fromSide.price, toSide.price),
     effort: { lines: effortLines, hours: ppmToText(hours), micros: toSafe(effortMicros) },
     oneTimeEgress: { gb: ppmToText(moveGb), micros: egressMicros === null ? null : toSafe(egressMicros) },
     oneTimeTotalMicros: oneTime === null ? null : toSafe(oneTime),
