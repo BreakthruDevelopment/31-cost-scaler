@@ -42,7 +42,24 @@ export const adviceOutput = z.object({
 });
 export type AdviceOutput = z.infer<typeof adviceOutput>;
 
-export type TraceCall = { id: string; name: string; args: unknown; result: unknown; error: string | null };
+/** `agent` is set by the team: which specialist made the call (server-recorded, never taken from a model). */
+export type TraceCall = { id: string; name: string; args: unknown; result: unknown; error: string | null; agent?: string };
+
+export type Delegation = { agent: string; callIds: string[]; llmCalls: number; outcome: string };
+
+/**
+ * Which specialist produced each shown figure, derived from the trace (never from the model's words): `{ c2: "pricing" }`.
+ * A figure whose call has no agent (a single-agent answer) has no entry; the UI shows "Advisor" for it.
+ */
+export function figureAgents(figures: readonly { call: string }[], calls: readonly TraceCall[]): Record<string, string> {
+  const byId = new Map(calls.map((c) => [c.id, c]));
+  const out: Record<string, string> = {};
+  for (const f of figures) {
+    const agent = byId.get(f.call)?.agent;
+    if (agent) out[f.call] = agent;
+  }
+  return out;
+}
 
 export type DroppedFigure = { label: string; call: string; path: string; reason: "unknown_call" | "call_failed" | "path_not_found" | "not_a_number" | "unsupported_path" | "mismatch" | "duplicate" };
 

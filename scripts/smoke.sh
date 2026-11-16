@@ -147,6 +147,12 @@ ASK='{"question":"Should build-tracker move at ten times the users?","app":"buil
 advice=$(curl -fsS -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"question\":\"Should build-tracker move?\",\"app\":\"build-tracker\",\"scenarioId\":\"$sid\"}" "$BASE_URL/api/advice") || fail "POST /api/advice failed"
 echo "$advice" | grep -Eq '"recommendation":"(move|consider|stay|not_enough_data|blocked)"' || fail "the advisor answer has no recommendation: $advice"
 echo "$advice" | grep -q '"droppedFigures":\[\]' || fail "the demo answer had a figure that failed its check: $advice"
+# The team demo (no key in CI): two delegations, each call tagged with its specialist, every figure attributed by the server.
+echo "$advice" | grep -q '"delegations":\[{"agent":"pricing"' || fail "the demo answer has no pricing delegation: $advice"
+echo "$advice" | grep -q '"agent":"migration"' || fail "the demo answer has no migration delegation: $advice"
+echo "$advice" | grep -Eq '"figureAgents":\{[^}]*"pricing"' || fail "no figure is attributed to the pricing specialist: $advice"
+echo "$advice" | grep -Eq '"figureAgents":\{[^}]*"migration"' || fail "no figure is attributed to the migration specialist: $advice"
+echo "$advice" | grep -q '"teamDroppedFigures":\[\]' || fail "the demo answer had a figure dropped by the team gate: $advice"
 op2="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
 ASK2="{\"question\":\"Replay check\",\"app\":\"build-tracker\",\"clientOpId\":\"$op2\"}"
 adv1=$(curl -fsS -w '\n%{http_code}' -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$ASK2" "$BASE_URL/api/advice") || fail "advice with a client op id failed"

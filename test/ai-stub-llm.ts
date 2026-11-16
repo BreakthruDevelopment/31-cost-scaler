@@ -64,3 +64,65 @@ export class HangingLlm extends BaseLlm {
     throw new Error("no live connection in tests");
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A team: one model stand-in serving the coordinator, the two specialists and (after a failed team) the single agent.
+// ---------------------------------------------------------------------------------------------------------------------
+
+export type TeamRole = "coordinator" | "pricing" | "migration" | "single";
+/** One model turn: ask for a tool (a delegation, for the coordinator) or say something (the final text). */
+export type TeamTurn = { call: StubCall } | { say: string | object | ((results: StubResult[]) => unknown) } | { throws: Error };
+/** A role's turns in order, or a function of the turn number (for loops). After the last turn the role repeats it. */
+export type TeamScript = TeamTurn[] | ((turn: number, results: StubResult[]) => TeamTurn);
+
+export function roleOf(req: LlmRequest): TeamRole {
+  const system = String(req.config?.systemInstruction ?? "");
+  if (system.includes("You are the coordinator")) return "coordinator";
+  if (system.includes("You are the pricing specialist")) return "pricing";
+  if (system.includes("You are the migration specialist")) return "migration";
+  return "single";
+}
+
+export class TeamScriptedLlm extends BaseLlm {
+  /** Every request, with the role that made it. */
+  requests: { role: TeamRole; request: LlmRequest }[] = [];
+  private turns: Record<TeamRole, number> = { coordinator: 0, pricing: 0, migration: 0, single: 0 };
+  constructor(
+    private readonly scripts: Partial<Record<TeamRole, TeamScript>>,
+    private readonly delayMs = 0,
+  ) {
+    super({ model: "stub-model" });
+  }
+  count(role: TeamRole): number {
+    return this.requests.filter((r) => r.role === role).length;
+  }
+  async *generateContentAsync(req: LlmRequest): AsyncGenerator<LlmResponse, void> {
+    const role = roleOf(req);
+    if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
+    this.requests.push({ role, request: structuredClone({ ...req, toolsDict: {} }) });
+    const results = req.contents.flatMap((c) => (c.parts ?? []).flatMap((p) => (p.functionResponse?.response ? [p.functionResponse.response as StubResult] : [])));
+    const script = this.scripts[role] ?? [{ say: {} }];
+    const turn = this.turns[role]++;
+    const t: TeamTurn = typeof script === "function" ? script(turn, results) : script[Math.min(turn, script.length - 1)];
+    if ("throws" in t) throw t.throws;
+    if ("call" in t) {
+      yield { content: { role: "model", parts: [{ functionCall: { name: t.call.name, args: t.call.args as Record<string, unknown> } }] } };
+      return;
+    }
+    const said = typeof t.say === "function" ? t.say(results) : t.say;
+    yield { content: { role: "model", parts: [{ text: typeof said === "string" ? said : JSON.stringify(said) }] } };
+  }
+  async connect(): Promise<never> {
+    throw new Error("no live connection in tests");
+  }
+}
+
+/** A 429 the way Gemini's SDK words it, with a per-minute or a per-day quota id. */
+export function quotaError(scope: "minute" | "day"): Error {
+  const id = scope === "day" ? "GenerateRequestsPerDayPerProjectPerModel-FreeTier" : "GenerateRequestsPerMinutePerProjectPerModel-FreeTier";
+  return Object.assign(new Error(`got status: 429. {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"violations":[{"quotaId":"${id}"}]}]}}`), { status: 429 });
+}
+
+/** A specialist's reply as the JSON text it would send. */
+export const reportText = (findings: { call: string; path: string; note?: string }[], summary = "Looked at the tool results.", gaps: string[] = []) =>
+  JSON.stringify({ summary, findings: findings.map((f) => ({ note: "figure", ...f })), gaps });

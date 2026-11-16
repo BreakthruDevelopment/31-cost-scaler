@@ -33,6 +33,10 @@ The BreakthruDevelopment org holds other, unrelated applications.
   (`src/lib/ai/agent.ts`, Google ADK for TypeScript) for agents. Never call a model API, or create an ADK agent,
   runner or model, outside `src/lib/ai`. `runAgent()` applies the same input caps, daily budget, prompt-injection
   rule, demo fixture and logging rules as `generate()`; its tools are read-only unless a spec says otherwise.
+  An ADK team (a coordinator that delegates to specialist agents through `AgentTool`) is still `runAgent()`: it is built
+  in `src/lib/ai/agent-team.ts` and nowhere else, shares one model-call counter and one budget, treats every specialist
+  reply as data (checked and re-read from the recorded tool results before the coordinator sees it), and is authorized by
+  the same server-side rules as a normal request: each tool closes over the acting user, so a delegation can't widen access.
   (App 31 only: the template and the playbook keep the `generate()`-only rule until this proves itself.)
 - Node 24.13+ (Dockerfile, CI): `@google/adk` asks for it.
 

@@ -14,7 +14,7 @@ import {
   runDemoToolLoop,
   runToolLoop,
 } from "./tools";
-import { type AiProvider, type GenerateRequest, type GenerateResult, AiError } from "./types";
+import { type AiProvider, type GenerateRequest, type GenerateResult, type RequestBudget, AiError } from "./types";
 
 export { AiError } from "./types";
 export { MAX_IMAGES, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, IMAGE_MIME_TYPES } from "./images";
@@ -141,6 +141,8 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
     history,
     demoContext: req.demoContext,
     prepared,
+    // Every HTTP attempt is counted (a 5xx retry is a second one) and held to the caller's ceiling, if it set one.
+    requests: { sent: 0, max: req.requestBudget?.max ?? Infinity } as RequestBudget,
   };
   const e = env();
   const started = Date.now();
@@ -151,7 +153,7 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
     const latencyMs = Date.now() - started;
     // Tool names, outcome codes and timings only: never arguments, results, messages or prompts.
     log.info("ai.tool_loop", { task: req.task, provider: name, model, demo, outcome: "ok", steps: trace.steps, calls: trace.calls, latencyMs });
-    return { data, provider: name, model, demo, latencyMs, liveCalls: trace.liveResponses ?? 0 };
+    return { data, provider: name, model, demo, latencyMs, liveCalls: trace.liveResponses ?? 0, requestsSent: loop.requests.sent };
   };
   const demo = async () => {
     trace.steps = 0;
@@ -163,7 +165,15 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
   try {
     return done(await runToolLoop(loop, provider, trace), provider.name, provider.model, false);
   } catch (err) {
-    if (err instanceof AiError && trace.liveResponses) err.liveCalls = trace.liveResponses;
+    // What this call cost, carried on whatever error finally leaves it (also when the demo then fails too).
+    const annotate = <E>(e: E): E => {
+      if (e !== null && typeof e === "object") {
+        if (trace.liveResponses && e instanceof AiError) e.liveCalls = trace.liveResponses;
+        (e as { requestsSent?: number }).requestsSent = loop.requests.sent;
+      }
+      return e;
+    };
+    annotate(err);
     const kind = err instanceof AiError ? err.kind : "provider";
     const status = err instanceof AiError ? err.status : undefined;
     log.warn("ai.tool_loop.failed", { task: req.task, provider: provider.name, model: provider.model, kind, status, steps: trace.steps, calls: trace.calls });
@@ -173,7 +183,7 @@ async function generateWithTools<T>(req: Extract<GenerateRequest<T>, { tools: un
       return demo().catch((demoErr) => {
         // Running out of the shared deadline in the demo path is still a tool_loop timeout; anything
         // else (e.g. no demo script) is less useful than the provider error that got us here.
-        throw demoErr instanceof AiError && demoErr.kind === "tool_loop" ? demoErr : err;
+        throw annotate(demoErr instanceof AiError && demoErr.kind === "tool_loop" ? demoErr : err);
       });
     }
     throw err;

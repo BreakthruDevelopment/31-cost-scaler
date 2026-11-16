@@ -1,4 +1,4 @@
-import type { DemoToolScript } from "./types";
+import type { DemoTeamScript, DemoToolResult, DemoToolScript } from "./types";
 
 /**
  * Recorded answers keyed by task name. Demo mode keeps live demos working when the
@@ -45,63 +45,95 @@ export const demoToolScripts: Record<string, (ctx: unknown) => DemoToolScript> =
 const CLOUDS_IN_ORDER = ["aws", "azure", "gcp", "oci"] as const;
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
+type DemoAsk = { app: string; scenarioId: string | undefined };
+function demoAsk(ctx: unknown): DemoAsk {
+  const c = isObj(ctx) ? ctx : {};
+  return { app: typeof c.app === "string" ? c.app : "helpdesk", scenarioId: typeof c.scenarioId === "string" ? c.scenarioId : undefined };
+}
+
+/** The scenario step: the user's own scenario, else the 10x users preset. */
+const scenarioCall = ({ scenarioId }: DemoAsk) => ({ name: "priceScenario", args: scenarioId ? { scenarioId } : { preset: "10x_users" } });
+
+/** The move step: the app's own cloud to the cheapest cloud it is not on, by the scenario's list price. */
+function moveCall({ app, scenarioId }: DemoAsk, previous: DemoToolResult[]) {
+  const fp = previous[0]?.ok && isObj(previous[0].data) ? previous[0].data : {};
+  const runsOn = Array.isArray(fp.clouds) ? fp.clouds.filter((x): x is string => typeof x === "string") : [];
+  const scen = previous[1]?.ok && isObj(previous[1].data) && isObj(previous[1].data.clouds) ? previous[1].data.clouds : {};
+  const candidates = CLOUDS_IN_ORDER.filter((x) => !runsOn.includes(x));
+  const price = (x: string) => (isObj(scen[x]) && typeof scen[x].listUsd === "number" ? scen[x].listUsd : Infinity);
+  const to = [...candidates].sort((a, b) => price(a) - price(b))[0] ?? "aws";
+  return { name: "migrationBreakEven", args: { app, from: runsOn[0], to, ...(scenarioId ? { scenarioId } : {}) } };
+}
+
+/** `final` for both demos: written by code from the real results (results[2] is the move analysis). */
+function demoFinal({ app, scenarioId }: DemoAsk, results: DemoToolResult[], opts: { pricingFigure?: boolean } = {}) {
+  const move = results[2];
+  const m = move?.ok && isObj(move.data) ? move.data : null;
+  const call = m && typeof m.callId === "string" ? m.callId : "c3";
+  if (!m) {
+    return {
+      headline: `Recorded demo answer: ${app} could not be analysed`,
+      recommendation: "not_enough_data",
+      targetCloud: null,
+      figures: [],
+      explanation: "The demo run could not price this app. Check the app name and the price table.",
+      caveats: ["Demo answer (no live model)"],
+    };
+  }
+  const fig = (label: string, key: string, unit: "per_month" | "one_time" | "months") =>
+    typeof m[key] === "number" ? [{ label, valueUsd: m[key] as number, unit, call, path: `/${key}` }] : [];
+  // The team demo also cites the pricing specialist's own scenario figure for the target cloud.
+  const scen = results[1]?.ok && isObj(results[1].data) ? results[1].data : null;
+  const scenCloud = scen && isObj(scen.clouds) && typeof m.to === "string" && isObj(scen.clouds[m.to]) ? scen.clouds[m.to] : null;
+  const pricing =
+    opts.pricingFigure && scen && typeof scen.callId === "string" && isObj(scenCloud) && typeof scenCloud.listUsd === "number"
+      ? [{ label: `Scenario list cost on ${String(m.to)}`, valueUsd: scenCloud.listUsd, unit: "per_month" as const, call: scen.callId, path: `/clouds/${String(m.to)}/listUsd` }]
+      : [];
+  const verdict = typeof m.verdict === "string" ? m.verdict : "not_enough_data";
+  return {
+    headline: scenarioId ? `Recorded demo answer: ${app} on your scenario` : `Recorded demo answer: ${app} at ten times the users`,
+    recommendation: verdict,
+    targetCloud: verdict === "move" || verdict === "consider" ? m.to : null,
+    figures: [
+      ...fig(`Monthly list cost on ${String(m.from)}`, "monthlyFromUsd", "per_month"),
+      ...fig(`Monthly list cost on ${String(m.to)}`, "monthlyToUsd", "per_month"),
+      ...fig("One-time cost of moving", "oneTimeUsd", "one_time"),
+      ...fig("Months to pay it back", "breakEvenMonths", "months"),
+      ...pricing,
+    ],
+    explanation: `Demo: ${Array.isArray(m.reasons) ? m.reasons.filter((r) => typeof r === "string").join(" ") : "see the figures."}`.slice(0, 600),
+    caveats: ["Demo answer (no live model)", "List prices only, not a quote."],
+  };
+}
+
 /**
  * Scaling advisor demo: getFootprint(app ?? "helpdesk") -> priceScenario(the user's scenario, else the 10x users preset)
  * -> migrationBreakEven(app, its cloud, the cheapest cloud it is not on). `final` writes the answer from those results,
  * so a demo shows real numbers and passes the same server checks as a live one.
  */
 demoToolScripts["scaling-advice"] = (ctx) => {
-  const c = isObj(ctx) ? ctx : {};
-  const app = typeof c.app === "string" ? c.app : "helpdesk";
-  const scenarioId = typeof c.scenarioId === "string" ? c.scenarioId : undefined;
+  const ask = demoAsk(ctx);
   return {
-    steps: [
-      { call: { name: "getFootprint", args: { app } } },
-      { call: { name: "priceScenario", args: scenarioId ? { scenarioId } : { preset: "10x_users" } } },
-      {
-        call: (previous) => {
-          const fp = previous[0]?.ok && isObj(previous[0].data) ? previous[0].data : {};
-          const runsOn = Array.isArray(fp.clouds) ? fp.clouds.filter((x): x is string => typeof x === "string") : [];
-          const scen = previous[1]?.ok && isObj(previous[1].data) && isObj(previous[1].data.clouds) ? previous[1].data.clouds : {};
-          const candidates = CLOUDS_IN_ORDER.filter((x) => !runsOn.includes(x));
-          const price = (x: string) => (isObj(scen[x]) && typeof scen[x].listUsd === "number" ? scen[x].listUsd : Infinity);
-          const to = [...candidates].sort((a, b) => price(a) - price(b))[0] ?? "aws";
-          return { name: "migrationBreakEven", args: { app, from: runsOn[0], to, ...(scenarioId ? { scenarioId } : {}) } };
-        },
-      },
-    ],
-    final: (results) => {
-      const move = results[2];
-      const m = move?.ok && isObj(move.data) ? move.data : null;
-      const call = m && typeof m.callId === "string" ? m.callId : "c3";
-      if (!m) {
-        return {
-          headline: `Recorded demo answer: ${app} could not be analysed`,
-          recommendation: "not_enough_data",
-          targetCloud: null,
-          figures: [],
-          explanation: "The demo run could not price this app. Check the app name and the price table.",
-          caveats: ["Demo answer (no live model)"],
-        };
-      }
-      const fig = (label: string, key: string, unit: "per_month" | "one_time" | "months") =>
-        typeof m[key] === "number" ? [{ label, valueUsd: m[key] as number, unit, call, path: `/${key}` }] : [];
-      const verdict = typeof m.verdict === "string" ? m.verdict : "not_enough_data";
-      return {
-        headline: scenarioId ? `Recorded demo answer: ${app} on your scenario` : `Recorded demo answer: ${app} at ten times the users`,
-        recommendation: verdict,
-        targetCloud: verdict === "move" || verdict === "consider" ? m.to : null,
-        figures: [
-          ...fig(`Monthly list cost on ${String(m.from)}`, "monthlyFromUsd", "per_month"),
-          ...fig(`Monthly list cost on ${String(m.to)}`, "monthlyToUsd", "per_month"),
-          ...fig("One-time cost of moving", "oneTimeUsd", "one_time"),
-          ...fig("Months to pay it back", "breakEvenMonths", "months"),
-        ],
-        explanation: `Demo: ${Array.isArray(m.reasons) ? m.reasons.filter((r) => typeof r === "string").join(" ") : "see the figures."}`.slice(0, 600),
-        caveats: ["Demo answer (no live model)", "List prices only, not a quote."],
-      };
-    },
+    steps: [{ call: { name: "getFootprint", args: { app: ask.app } } }, { call: scenarioCall(ask) }, { call: (previous) => moveCall(ask, previous) }],
+    final: (results) => demoFinal(ask, results),
   };
+};
+
+/**
+ * The same demo as a team: the pricing specialist calls getFootprint then priceScenario, the migration specialist calls
+ * migrationBreakEven. Each tool call is recorded with its specialist, so attribution shows in demo mode too.
+ */
+export const demoTeamScripts: Record<string, (ctx: unknown) => DemoTeamScript> = {
+  "scaling-advice": (ctx) => {
+    const ask = demoAsk(ctx);
+    return {
+      delegations: [
+        { agent: "pricing", steps: [{ call: { name: "getFootprint", args: { app: ask.app } } }, { call: scenarioCall(ask) }] },
+        { agent: "migration", steps: [{ call: (previous) => moveCall(ask, previous) }] },
+      ],
+      final: (results) => demoFinal(ask, results, { pricingFigure: true }),
+    };
+  },
 };
 
 export function demoAnswer(task: string): string {

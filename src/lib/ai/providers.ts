@@ -1,5 +1,5 @@
 import { env } from "@/lib/env";
-import { type AiProvider, type ToolCall, type ToolHistoryItem, type ToolStepRequest, type ToolStepResult, AiError } from "./types";
+import { type AiProvider, type RequestBudget, type ToolCall, type ToolHistoryItem, type ToolStepRequest, type ToolStepResult, AiError } from "./types";
 
 async function postOnce(url: string, headers: Record<string, string>, body: unknown, deadline: number) {
   try {
@@ -18,13 +18,21 @@ async function postOnce(url: string, headers: Record<string, string>, body: unkn
 }
 
 /** `deadlineAt` (epoch ms) lets a tool loop bound this call by what is left of its own budget. */
-async function post(url: string, headers: Record<string, string>, body: unknown, deadlineAt?: number): Promise<unknown> {
+async function post(url: string, headers: Record<string, string>, body: unknown, deadlineAt?: number, requests?: RequestBudget): Promise<unknown> {
   const deadline = Math.min(Date.now() + env().AI_TIMEOUT_MS, deadlineAt ?? Infinity);
-  let res = await postOnce(url, headers, body, deadline);
-  // Free-tier models are often briefly overloaded: retry a 500/503 once if there's time left.
-  if ((res.status === 500 || res.status === 503) && deadline - Date.now() > 3000) {
+  // Every attempt is counted, and none is sent past the ceiling (a caller that settles a budget on requests sent).
+  const attempt = () => {
+    if (requests) {
+      if (requests.sent >= requests.max) throw new AiError("The request budget is used up", "tool_loop");
+      requests.sent++;
+    }
+    return postOnce(url, headers, body, deadline);
+  };
+  let res = await attempt();
+  // Free-tier models are often briefly overloaded: retry a 500/503 once if there's time left and budget for it.
+  if ((res.status === 500 || res.status === 503) && deadline - Date.now() > 3000 && (!requests || requests.sent < requests.max)) {
     await new Promise((r) => setTimeout(r, 400));
-    res = await postOnce(url, headers, body, deadline);
+    res = await attempt();
   }
   if (res.status === 429) throw new AiError("Model quota reached", "quota", 429);
   if (!res.ok) {
@@ -80,7 +88,7 @@ export function geminiProvider(apiKey: string, model: string): AiProvider {
       return text;
     },
 
-    async step({ system, history, tools, forceRespond, maxOutputTokens, deadlineAt }: ToolStepRequest): Promise<ToolStepResult> {
+    async step({ system, history, tools, forceRespond, maxOutputTokens, deadlineAt, requests }: ToolStepRequest): Promise<ToolStepResult> {
       const json = (await post(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         { "x-goog-api-key": apiKey },
@@ -108,6 +116,7 @@ export function geminiProvider(apiKey: string, model: string): AiProvider {
           },
         },
         deadlineAt,
+        requests,
       )) as { candidates?: { content?: { role?: string; parts?: GeminiPart[] } }[] };
       const content = json.candidates?.[0]?.content;
       const parts = content?.parts;
@@ -190,7 +199,7 @@ export function anthropicProvider(apiKey: string, model: string): AiProvider {
       return text;
     },
 
-    async step({ system, history, tools, forceRespond, maxOutputTokens, deadlineAt }: ToolStepRequest): Promise<ToolStepResult> {
+    async step({ system, history, tools, forceRespond, maxOutputTokens, deadlineAt, requests }: ToolStepRequest): Promise<ToolStepResult> {
       const json = (await post(
         "https://api.anthropic.com/v1/messages",
         { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
@@ -203,6 +212,7 @@ export function anthropicProvider(apiKey: string, model: string): AiProvider {
           tool_choice: forceRespond ? { type: "tool", name: "respond" } : { type: "auto" },
         },
         deadlineAt,
+        requests,
       )) as { content?: AnthropicBlock[] };
       const blocks = json.content;
       if (!blocks?.length) throw new AiError("Empty response from model", "invalid_output");

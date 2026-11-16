@@ -7,8 +7,8 @@ import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
 import { BASE_SPEC } from "@/lib/pricing/spec";
-import { type EvalOutcome, evalCases } from "./advice-eval-cases";
-import { ScriptedLlm } from "./ai-stub-llm";
+import { type EvalCase, type EvalOutcome, evalCases, outcomeOf } from "./advice-eval-cases";
+import { ScriptedLlm, TeamScriptedLlm } from "./ai-stub-llm";
 import { fixturePriceRows } from "./fixtures/pricing-table";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -59,26 +59,48 @@ describe.skipIf(!url)("scaling advisor evals (stub model)", () => {
 
   const cases = () => evalCases({ foreignScenarioId, canaries });
 
-  async function run(c: ReturnType<typeof cases>[number]): Promise<EvalOutcome> {
+  /** One case through the single agent (`stub`) or, when it has team scripts, through the team, as `askAdvisor` runs them. */
+  async function run(c: EvalCase): Promise<EvalOutcome> {
     vi.stubEnv("AI_PROVIDER", "gemini");
     vi.stubEnv("GEMINI_API_KEY", "test-key");
     vi.stubEnv("LOG_LEVEL", "error");
+    vi.stubEnv("AI_FALLBACK_TO_DEMO", "true");
     resetEnvCache();
-    const llm = new ScriptedLlm(c.stub.plan, c.stub.final);
-    const result = await mods.agent.runAgent(
-      {
-        task: mods.advisor.ADVICE_TASK,
-        system: mods.advisor.ADVISOR_SYSTEM,
-        schema: mods.checks.adviceOutput,
-        input: c.question,
-        context: c.app ? `The user is asking about the app "${c.app}".` : undefined,
-        tools: mods.tools.advisorTools(ACTOR),
-      },
-      { innerLlm: llm },
-    );
-    const { output, checks } = mods.checks.checkAdvice(result.data, result.calls);
-    expect(result.engine).toBe("adk");
-    return { output, checks, calls: result.calls, engine: result.engine };
+    const toolset = mods.tools.advisorToolset(ACTOR);
+    const base = {
+      task: mods.advisor.ADVICE_TASK,
+      system: mods.advisor.ADVISOR_SYSTEM,
+      schema: mods.checks.adviceOutput,
+      input: c.question,
+      context: c.app ? `The user is asking about the app "${c.app}".` : undefined,
+      tools: toolset.all,
+      demoContext: { app: c.app },
+    };
+    if (!c.team) {
+      const llm = new ScriptedLlm(c.stub!.plan, c.stub!.final);
+      const result = await mods.agent.runAgent({ ...base, demoContext: undefined }, { innerLlm: llm });
+      const { output, checks } = mods.checks.checkAdvice(result.data, result.calls);
+      expect(result.engine).toBe("adk");
+      return outcomeOf({ output, checks, calls: result.calls, engine: result.engine });
+    }
+    const llm = new TeamScriptedLlm(c.team);
+    const result = await mods.agent.runAgent({ ...base, team: mods.advisor.advisorTeam(toolset) }, { innerLlm: llm });
+    const { output, checks } = mods.checks.checkAdvice(result.data, result.calls, { trustedText: result.demo });
+    return outcomeOf({
+      output,
+      checks,
+      calls: result.calls,
+      engine: result.engine,
+      demo: result.demo,
+      fallbackReason: result.fallbackReason,
+      notice: result.notice,
+      delegations: result.delegations,
+      figureAgents: mods.checks.figureAgents(output.figures, result.calls),
+      teamDroppedFigures: result.teamDroppedFigures,
+      reportDroppedFindings: result.reportDroppedFindings,
+      attempts: result.attempts,
+      requestsSent: result.requestsSent,
+    });
   }
 
   for (const [i] of cases().entries()) {
@@ -87,6 +109,48 @@ describe.skipIf(!url)("scaling advisor evals (stub model)", () => {
       expect(cases()[i].check(outcome)).toEqual([]);
     });
   }
+
+  it("there are exactly five live questions, so `pnpm eval:advice` stays within the key's shared allowance", () => {
+    expect(cases().filter((c) => c.live && !c.stubOnly)).toHaveLength(5);
+  });
+
+  it("the team answers from the stub keep the figures that specialists reported, with the tools' own values", async () => {
+    const c = cases().find((x) => x.name.startsWith("team: a move question"))!;
+    const o = await run(c);
+    expect(o.engine).toBe("team");
+    expect(o.output.figures.length).toBeGreaterThanOrEqual(3);
+    for (const f of o.output.figures) {
+      const call = o.calls.find((x) => x.id === f.call)!;
+      expect(mods.checks.resolvePointer(call.result, f.path)).toBeCloseTo(f.valueUsd, 2);
+      expect(call.agent).toBe(o.figureAgents[f.call]);
+    }
+    expect(o.teamDroppedFigures).toEqual([]);
+    expect(o.checks.droppedFigures).toEqual([]);
+  });
+
+  it("the demo team answer for helpdesk passes checkAdvice with full attribution", async () => {
+    vi.stubEnv("AI_PROVIDER", "demo");
+    vi.stubEnv("LOG_LEVEL", "error");
+    resetEnvCache();
+    const toolset = mods.tools.advisorToolset(ACTOR);
+    const result = await mods.agent.runAgent({
+      task: mods.advisor.ADVICE_TASK,
+      system: mods.advisor.ADVISOR_SYSTEM,
+      schema: mods.checks.adviceOutput,
+      input: "Should helpdesk move if it reaches 5,000 users?",
+      tools: toolset.all,
+      team: mods.advisor.advisorTeam(toolset),
+      demoContext: { app: "helpdesk" },
+    });
+    const { output, checks } = mods.checks.checkAdvice(result.data, result.calls, { trustedText: true });
+    expect(result.engine).toBe("demo");
+    expect(checks.droppedFigures).toEqual([]);
+    expect(checks.fixedAnswer).toBe(false);
+    const attribution = mods.checks.figureAgents(output.figures, result.calls);
+    expect(output.figures.length).toBeGreaterThanOrEqual(4);
+    expect(output.figures.every((f) => attribution[f.call])).toBe(true);
+    expect(new Set(Object.values(attribution))).toEqual(new Set(["pricing", "migration"]));
+  });
 
   it("the demo answer for helpdesk passes the same checks", async () => {
     vi.stubEnv("AI_PROVIDER", "demo");

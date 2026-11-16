@@ -48,9 +48,38 @@ export async function reserveDaily(tx: Executor, kind: DailyKind, cap: number): 
   return rows.length > 0;
 }
 
+/**
+ * Reserve model-call units from today's (UTC) counter for one question: up to `max`, but only when at least `min` of the
+ * `cap` remain; otherwise null (the app is at its daily cap) and nothing changes. Returns the day the units were taken
+ * from, so the unused part can be given back to that same day even if the question runs past midnight UTC.
+ * Serialized per kind with an advisory lock (hence `Tx`, at READ COMMITTED): two questions can never reserve past `cap`.
+ */
+export async function reserveDailyUnits(tx: Tx, kind: DailyKind, cap: number, max: number, min: number): Promise<{ day: string; units: number } | null> {
+  if (!(cap >= 1) || !(max >= min) || !(min >= 1)) return null;
+  await advisoryLock(tx, `daily:${kind}`);
+  await tx.execute(sql`insert into daily_usage (day, kind, count) values (${today}, ${kind}, 0) on conflict (day, kind) do nothing`);
+  const rows = await tx.execute<{ day: string; used: number }>(sql`select day::text as day, count as used from daily_usage where day = ${today} and kind = ${kind}`);
+  const used = Number(rows[0].used);
+  const units = Math.min(max, cap - used);
+  if (units < min) return null;
+  await tx.execute(sql`update daily_usage set count = count + ${units}::int where day = ${rows[0].day}::date and kind = ${kind}`);
+  return { day: rows[0].day, units };
+}
+
+/** Give back `units` reserved on `day` (the reservation's own UTC day, not today). Never goes below zero. */
+export async function releaseDailyUnits(tx: Executor, kind: DailyKind, day: string, units: number): Promise<void> {
+  if (!(units >= 1)) return;
+  await tx.execute(sql`update daily_usage set count = greatest(count - ${Math.floor(units)}::int, 0) where day = ${day}::date and kind = ${kind}`);
+}
+
 export async function dailyCount(kind: DailyKind): Promise<number> {
   const rows = await db().execute<{ count: number }>(sql`select count from daily_usage where day = ${today} and kind = ${kind}`);
   return rows.length ? Number(rows[0].count) : 0;
+}
+
+/** The per-user lock `consumeRate` takes. Take it first to run another count in the same critical section. */
+export async function lockRate(tx: Tx, userId: string, kind: RateKind): Promise<void> {
+  await advisoryLock(tx, `rate:${kind}:${userId}`);
 }
 
 /**
@@ -66,7 +95,7 @@ export async function consumeRate(
   opts: { windowSeconds?: number; now?: Date } = {},
 ): Promise<void> {
   const { rateEvent } = schema;
-  await advisoryLock(tx, `rate:${kind}:${userId}`);
+  await lockRate(tx, userId, kind);
   const windowSeconds = opts.windowSeconds ?? HOUR_SECONDS;
   // `now` is a parameter so tests can pin the clock; production passes nothing and the database decides.
   const nowSql = opts.now ? sql`${opts.now.toISOString()}::timestamptz` : sql`now()`;
@@ -86,7 +115,7 @@ export async function consumeRate(
 /** Undo one `consumeRate` (the newest row) when the work it paid for never happened. */
 export async function releaseRate(tx: Tx, userId: string, kind: RateKind): Promise<void> {
   // Same lock as consumeRate: two concurrent refunds must not both pick the same newest row.
-  await advisoryLock(tx, `rate:${kind}:${userId}`);
+  await lockRate(tx, userId, kind);
   await tx.execute(sql`
     delete from rate_event where id = (
       select id from rate_event where user_id = ${userId} and kind = ${kind} order by at desc limit 1

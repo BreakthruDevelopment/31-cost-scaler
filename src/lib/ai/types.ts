@@ -57,11 +57,22 @@ export type DemoToolScript = {
   final: (results: DemoToolResult[]) => unknown;
 };
 
+/**
+ * A scripted team run (demo mode): each delegation is one specialist making its tool calls in order, over the real tools.
+ * A step's `call` function sees every result so far, across delegations. `final` writes the coordinator's answer.
+ */
+export type DemoTeamScript = {
+  delegations: { agent: string; steps: { call: DemoToolCall | ((previous: DemoToolResult[]) => DemoToolCall) }[] }[];
+  final: (results: DemoToolResult[]) => unknown;
+};
+
 type ToolFields = {
   /** The allow-list for this call: a model can only invoke tools listed here. Max 10. */
   tools: AnyToolDef[];
   /** Model calls, including the forced final one. Default 4, max 6. */
   maxSteps?: number;
+  /** Optional ceiling on HTTP attempts, retries included (`runAgent` passes what is left of its question's budget). */
+  requestBudget?: { max: number };
   /** Wall-clock budget for the whole loop in ms. Default 24,000, max 60,000. */
   deadlineMs?: number;
   /** Passed to `demoToolScripts[task]` in demo mode (e.g. the data the scripted calls need). */
@@ -91,6 +102,8 @@ export type GenerateResult<T> = {
   latencyMs: number;
   /** Tool loops only: live model replies received, even when the answer then came from the demo script. */
   liveCalls?: number;
+  /** Tool loops only: every HTTP attempt sent to the provider, retries and failures included. */
+  requestsSent?: number;
 };
 
 export interface AiProvider {
@@ -122,7 +135,12 @@ export type ToolStepRequest = {
   maxOutputTokens: number;
   /** Absolute epoch ms by which the provider call must finish. */
   deadlineAt: number;
+  /** Counts every HTTP attempt (a 5xx retry is a second one) and refuses any past `max`. */
+  requests?: RequestBudget;
 };
+
+/** HTTP attempts sent to a provider, against a ceiling. Shared by the steps of one tool loop. */
+export type RequestBudget = { sent: number; max: number };
 
 export type ToolStepResult = {
   calls: ToolCall[];
@@ -134,6 +152,10 @@ export type ToolStepResult = {
 export class AiError extends Error {
   /** Set by a tool loop that failed after live model replies arrived (they cost quota even though the answer failed). */
   liveCalls?: number;
+  /** Set by a tool loop that failed: every HTTP attempt it sent (retries and failed ones included). */
+  requestsSent?: number;
+  /** A quota error only: whether the provider's message named a per-day limit ("day") or something else ("minute"). */
+  quotaScope?: "day" | "minute";
   constructor(
     message: string,
     readonly kind: "quota" | "provider" | "invalid_output" | "input_rejected" | "tool_loop",

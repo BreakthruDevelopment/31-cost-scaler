@@ -1,11 +1,12 @@
 import "server-only";
-import { desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, gt, sql } from "drizzle-orm";
 import { type Actor } from "@/lib/auth/rbac";
 import { assertCan } from "@/lib/access";
 import { db, schema } from "@/lib/db";
-import { NotFoundError } from "@/lib/errors";
+import { NotFoundError, TooManyRequestsError } from "@/lib/errors";
 import { ownedBy } from "@/lib/owned";
 import { parseId } from "@/lib/scenarios";
+import { type Tx, lockRate } from "@/lib/usage";
 
 /**
  * Saved advisor answers: owner only, a 404 for anyone else (admin included). `createAdvice` is the only writer
@@ -25,6 +26,22 @@ export async function getAdvice(actor: Actor, id: string) {
   if (!row) throw new NotFoundError();
   assertCan(actor, "read", "advice", row);
   return row;
+}
+
+/**
+ * The per-user daily limit: at most `limit` stored answers in the last 24 hours. Call it inside the rate transaction,
+ * before `consumeRate`: it takes the same per-user lock, so concurrent questions are counted one at a time. It counts
+ * `advice` rows (not `rate_event`, which `consumeRate` prunes after an hour). An answer is stored when it finishes, so
+ * a question still running is not counted yet; the per-hour limit bounds how many can be.
+ */
+export async function assertAdviceDailyLimit(tx: Tx, userId: string, limit: number, message: string): Promise<void> {
+  const { advice } = schema;
+  await lockRate(tx, userId, "advice");
+  const [{ n }] = await tx
+    .select({ n: count() })
+    .from(advice)
+    .where(and(eq(advice.ownerId, userId), gt(advice.createdAt, sql`now() - interval '24 hours'`)));
+  if (n >= limit) throw new TooManyRequestsError(message);
 }
 
 /** A Postgres text/jsonb value can't hold a NUL; model text could, so drop them from every string before storing. */
