@@ -1,9 +1,11 @@
 import "server-only";
 import { count, desc, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import { type Actor } from "@/lib/auth/rbac";
-import { assertCan } from "@/lib/access";
+import { type Subject, assertCan } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { advisorDailyModelCalls } from "@/lib/env";
+import { latestFootprintRefresh } from "@/lib/footprint/refresh";
 import { dailyCount } from "@/lib/usage";
 
 /**
@@ -51,4 +53,42 @@ export async function adminStats(actor: Actor) {
     prices: { active: prices.n, quarantined: quarantined.n },
     refresh: latest,
   };
+}
+
+/**
+ * The quarantined price rows themselves (admin). A quarantined row is public price data that failed a sanity bound
+ * or moved more than 3x since the last fetch: the old value is still being used, and an admin has to look at it.
+ * Public data, so this is not a privacy step up from `adminStats`; it is capped so a bad feed can't flood the page.
+ */
+export const MAX_QUARANTINED_SHOWN = 50;
+
+export async function listQuarantinedPrices(actor: Subject) {
+  assertCan(actor, "read", "admin_stats");
+  const p = schema.pricePoint;
+  return db().select().from(p).where(eq(p.status, "quarantined")).orderBy(desc(p.fetchedAt)).limit(MAX_QUARANTINED_SHOWN);
+}
+
+/**
+ * The drift report the footprint refresh stores in `detail`, re-parsed (jsonb is never trusted by shape).
+ *
+ * Lengths are trimmed here, never used to reject: a length cap on a mismatch would make ONE odd row empty the
+ * whole array, and the admin would read "no drift" on a page whose only job is to say there is some. Measured:
+ * a 70-character profile key against a `.max(60)` silently hid two real mismatches.
+ */
+const trimmed = (max: number) => z.string().transform((s) => s.slice(0, max));
+const driftMismatch = z.object({ key: trimmed(120), expected: trimmed(60), actual: trimmed(60).nullable() });
+const driftReport = z.object({
+  files: z.record(z.string(), z.enum(["checked", "unavailable"])).catch({}),
+  mismatches: z.array(driftMismatch).max(200).catch([]),
+});
+
+export type ProfileDrift = { checkedAt: string | null; files: Record<string, "checked" | "unavailable">; mismatches: { key: string; expected: string; actual: string | null }[] } | null;
+
+/** Profile drift from the latest footprint refresh: null when it has never run or stored no report. */
+export async function profileDrift(actor: Subject): Promise<ProfileDrift> {
+  const row = await latestFootprintRefresh(actor);
+  const parsed = driftReport.safeParse(row?.detail?.drift);
+  if (!parsed.success) return null;
+  const checkedAt = typeof row?.detail?.checkedAt === "string" ? row.detail.checkedAt : (row?.finishedAt?.toISOString() ?? null);
+  return { checkedAt, files: parsed.data.files, mismatches: parsed.data.mismatches };
 }
