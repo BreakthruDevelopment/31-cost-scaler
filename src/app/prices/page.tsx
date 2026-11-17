@@ -14,6 +14,9 @@ export const dynamic = "force-dynamic";
 
 const first = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v);
 
+/** Above this many rows a cloud's panel starts folded, so the page stays scrollable on a phone. */
+const ROWS_OPEN_BY_DEFAULT = 40;
+
 export default async function PricesPage({ searchParams }: PageProps<"/prices">) {
   if (!(await publicPricePageAllowed())) return <RateLimited section="Prices" retryHref="/prices" />;
   const query = await searchParams;
@@ -78,7 +81,18 @@ export default async function PricesPage({ searchParams }: PageProps<"/prices">)
         </Panel>
       ) : (
         table.groups.map((group) => (
-          <Panel key={group.cloud} title={cloudLabel(group.cloud)} count={group.rows.length}>
+          // A cloud with a lot of rows starts folded: the whole table is thousands of rows, and at 375px that is a
+          // page nobody can scroll. The count is on the header either way, and the rows are in the HTML, so
+          // find-in-page still works.
+          <Panel
+            key={group.cloud}
+            title={cloudLabel(group.cloud)}
+            count={group.rows.length}
+            collapsible
+            defaultOpen={group.rows.length <= ROWS_OPEN_BY_DEFAULT}
+            openLabel="Hide rows"
+            closedLabel="Show rows"
+          >
             <CloudPriceTable group={group} />
           </Panel>
         ))

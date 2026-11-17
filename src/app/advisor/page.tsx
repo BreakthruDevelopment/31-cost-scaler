@@ -51,7 +51,15 @@ export default async function AdvisorPage() {
         <AdvisorForm apps={appOptions} scenarios={scenarioOptions} />
       </Panel>
 
-      <Panel title="Your earlier answers" count={answers.length}>
+      {/* Up to 50 answers are kept, and each is a tall card, so the history folds once there are a few of them. */}
+      <Panel
+        title="Your earlier answers"
+        count={answers.length}
+        collapsible={answers.length > 3}
+        defaultOpen={answers.length <= 3}
+        openLabel="Hide answers"
+        closedLabel="Show answers"
+      >
         {answers.length === 0 ? (
           <div className="rounded-card bg-background px-4 py-6 text-center text-sm text-muted">
             Nothing yet. Your answers are private to you and appear here once you ask.
