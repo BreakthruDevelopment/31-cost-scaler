@@ -184,6 +184,45 @@ curl -fsS -b "$JAR_A" "$BASE_URL/api/advice" | grep -q '"question":"Should build
 curl -fsS -b "$JAR_B" "$BASE_URL/api/advice" | grep -q 'build-tracker' && fail "A's advice appeared in B's history"
 pass "advisor: signed-in only, B gets 404 on A's scenario, the answer is checked and stored for A alone"
 
+# The scenario screens (31.6): list, builder and compare. Signed out they redirect; signed in they show the
+# scenario's own numbers on four clouds; B never sees A's, by page or by comparison.
+for path in /scenarios /scenarios/new "/scenarios/$sid" "/scenarios/compare?ids=$sid"; do
+  code=$(status "$BASE_URL$path")
+  [ "$code" = "307" ] || fail "signed-out $path should redirect (307), got $code"
+done
+pass "signed-out scenario screens redirect"
+
+list=$(curl -fsS -b "$JAR_A" "$BASE_URL/scenarios" | text_of) || fail "/scenarios did not render for A"
+echo "$list" | grep -q "smoke scenario $RUN_ID" || fail "A's scenario is missing from /scenarios"
+echo "$list" | grep -q 'Compare selected' || fail "/scenarios has no compare form"
+curl -fsS -b "$JAR_B" "$BASE_URL/scenarios" | text_of | grep -q "smoke scenario $RUN_ID" && fail "A's scenario appeared on B's /scenarios"
+builder=$(curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/$sid" | text_of) || fail "/scenarios/\$id did not render for A"
+echo "$builder" | grep -q 'Cost on all four clouds' || fail "the builder shows no results panel"
+for cloud in AWS Azure 'Google Cloud' 'Oracle Cloud'; do
+  echo "$builder" | grep -q "$cloud" || fail "the builder does not price $cloud"
+done
+echo "$builder" | grep -q 'List price estimate' || fail "the builder is missing the list price estimate label"
+curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/new" | text_of | grep -q 'Price on all four clouds' || fail "/scenarios/new has no price button"
+[ "$(status -b "$JAR_B" "$BASE_URL/scenarios/$sid")" = "404" ] || fail "B opening A's scenario page should be 404"
+[ "$(status -b "$JAR_A" "$BASE_URL/scenarios/not-a-uuid")" = "404" ] || fail "a malformed scenario id should be 404"
+pass "A sees their scenario priced on four clouds; B gets 404"
+
+op_b="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
+second=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d "{\"name\":\"smoke second $RUN_ID\",\"spec\":$SPEC,\"clientOpId\":\"$op_b\"}" "$BASE_URL/api/scenarios") || fail "second scenario failed"
+sid2=$(echo "$second" | id_of)
+bob_scenario=$(curl -fsS -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d "{\"name\":\"smoke bob $RUN_ID\",\"spec\":$SPEC}" "$BASE_URL/api/scenarios") || fail "B's scenario failed"
+bsid=$(echo "$bob_scenario" | id_of)
+compare=$(curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid&ids=$sid2" | text_of) || fail "/scenarios/compare did not render"
+echo "$compare" | grep -q "smoke scenario $RUN_ID" || fail "the comparison is missing the first scenario"
+echo "$compare" | grep -q "smoke second $RUN_ID" || fail "the comparison is missing the second scenario"
+echo "$compare" | grep -q 'List cost a month' || fail "the comparison shows no list cost table"
+curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid" | text_of | grep -q 'at least 2 scenarios' || fail "comparing one scenario should ask for more"
+curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid&ids=$bsid" | text_of | grep -q 'no longer exists' || fail "A must not compare against B's scenario"
+curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid&ids=$bsid" | text_of | grep -q "smoke bob $RUN_ID" && fail "B's scenario name leaked into A's comparison"
+pass "A compares two of their own scenarios; B's id is 'no longer exists'"
+
 # Versioned update
 patched=$(curl -fsS -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"smoke renamed"}' "$BASE_URL/api/scenarios/$sid") || fail "owner PATCH failed"
 echo "$patched" | grep -q '"version":2' || fail "PATCH should bump the version: $patched"
