@@ -44,20 +44,24 @@ export function ScenarioBuilder({
   scenario,
   initialDraft,
   initialResult,
+  initialConditionalCredits,
   apps,
 }: {
   scenario: Saved;
   initialDraft: ScenarioDraft;
   initialResult: ScenarioPrice;
+  /** What the stored result was priced with, so a reopened scenario shows the estimate that was saved. */
+  initialConditionalCredits: boolean;
   apps: { name: string; title: string }[];
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState(initialDraft);
   const [version, setVersion] = useState(scenario?.version ?? 0);
   const [result, setResult] = useState(initialResult);
-  const [conditionalCredits, setConditionalCredits] = useState(false);
+  const [conditionalCredits, setConditionalCredits] = useState(initialConditionalCredits);
+  const [savedCredits, setSavedCredits] = useState(initialConditionalCredits);
   const [savedKey, setSavedKey] = useState(() => JSON.stringify(initialDraft));
-  const [pricedKey, setPricedKey] = useState(() => JSON.stringify({ spec: specInputFromDraft(initialDraft), conditionalCredits: false }));
+  const [pricedKey, setPricedKey] = useState(() => JSON.stringify({ spec: specInputFromDraft(initialDraft), conditionalCredits: initialConditionalCredits }));
   const [refused, setRefused] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const op = useRef<KeyedOp | null>(null);
@@ -67,7 +71,7 @@ export function ScenarioBuilder({
   const issueFor = (field: string) => issues.find((i) => i.field === field)?.message;
   const draftKey = JSON.stringify(draft);
   const priceKey = JSON.stringify({ spec: specInputFromDraft(draft), conditionalCredits });
-  const unsaved = draftKey !== savedKey;
+  const unsaved = draftKey !== savedKey || conditionalCredits !== savedCredits;
   const stalePrice = priceKey !== pricedKey;
 
   const set = (patch: Partial<ScenarioDraft>) => {
@@ -93,26 +97,28 @@ export function ScenarioBuilder({
     }
     const payload = { name: check.name, spec: check.spec };
     if (scenario) {
-      const res = await updateScenarioAction(scenario.id, { version, ...payload });
+      const res = await updateScenarioAction(scenario.id, { version, ...payload }, conditionalCredits);
       if (!res.ok) {
         setRefused(res.error);
         return;
       }
       if (res.scenario) setVersion(res.scenario.version);
       setSavedKey(draftKey);
+      setSavedCredits(conditionalCredits);
       setNotice("Saved.");
       router.refresh();
       return;
     }
     // One op id per intent, kept across retries until the server answers.
-    op.current = opFor(op.current, payload);
-    const res = await createScenarioAction({ ...payload, clientOpId: op.current.id });
+    op.current = opFor(op.current, { ...payload, conditionalCredits }); // a changed switch is a changed intent
+    const res = await createScenarioAction({ ...payload, clientOpId: op.current.id }, conditionalCredits);
     op.current = null; // the server answered: a later save is a new intent
     if (!res.ok) {
       setRefused(res.error);
       return;
     }
     setSavedKey(draftKey);
+    setSavedCredits(conditionalCredits);
     router.push(res.scenario ? `/scenarios/${res.scenario.id}` : "/scenarios");
     router.refresh();
   }, "Couldn't save the scenario. Check your connection and try again.");

@@ -5,6 +5,7 @@ import { listFootprint } from "@/lib/footprint/refresh";
 import { HttpError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { loadPriceTable } from "@/lib/pricing/data";
+import type { PriceOptions } from "@/lib/pricing/engine";
 import { type ScenarioPrice, priceScenario } from "@/lib/pricing/scenario";
 import { BASE_SPEC, type ScenarioSpec, scenarioSpec } from "@/lib/pricing/spec";
 import {
@@ -58,6 +59,8 @@ export type BuilderView = {
   draft: ScenarioDraft;
   /** The spec priced on all four clouds, for the result panel. */
   result: ScenarioPrice;
+  /** Whether the stored result was priced with new-account allowances: the builder's toggle starts there. */
+  conditionalCredits: boolean;
   freshness: PriceFreshness;
   /** Footprint app names for the "based on" picker. */
   apps: { name: string; title: string }[];
@@ -73,15 +76,22 @@ async function footprintOptions(): Promise<{ name: string; title: string }[]> {
   }
 }
 
+/** The allowance rule a scenario's stored result was priced under; off when there is no usable stored result. */
+export async function storedConditionalCredits(actor: Actor, id: string): Promise<boolean> {
+  return readStoredResult((await getScenarioResult(actor, id))?.result)?.conditionalCreditsApplied ?? false;
+}
+
 /** The builder for one of the actor's scenarios, or for a new one (`id` null). Another user's id throws 404. */
 export async function loadBuilder(actor: Actor, id: string | null): Promise<BuilderView> {
   const row = id === null ? null : await getScenario(actor, id);
   const spec = row ? specOf(row) : BASE_SPEC;
   const [table, apps] = await Promise.all([loadPriceTable(actor), footprintOptions()]);
+  const conditionalCredits = row ? await storedConditionalCredits(actor, row.id) : false;
   return {
     scenario: row ? { id: row.id, version: row.version } : null,
     draft: draftFromSpec(row?.name ?? "", spec),
-    result: priceScenario(spec, table),
+    result: priceScenario(spec, table, { conditionalCredits }),
+    conditionalCredits,
     freshness: priceFreshness(table),
     apps,
   };
@@ -91,15 +101,18 @@ export async function loadBuilder(actor: Actor, id: string | null): Promise<Buil
  * Price a saved scenario and store the result, so a later comparison reads the numbers the owner saw. Called after a
  * create or an update; a pricing failure is logged and swallowed, because the scenario itself is already saved.
  *
+ * `opts` is the pricing option the user had on when they pressed Save (it is not part of the spec and is stored only
+ * as `conditionalCreditsApplied` inside the result), so the stored numbers are the ones on screen.
+ *
  * `row` is the version this priced, and `saveScenarioResult` checks it against the locked scenario row. Loading the
  * price table and pricing take time, so a second save of the same scenario can commit a newer version in between;
  * these numbers then describe a spec that is gone, and the newer save's result is the one to keep. The write is
  * dropped in that case (`false` here), which is not a failure: nothing told the user this result was stored, and a
  * scenario with no usable stored result is simply priced again at comparison time.
  */
-export async function storeScenarioResult(actor: Actor, row: ScenarioRow): Promise<boolean> {
+export async function storeScenarioResult(actor: Actor, row: ScenarioRow, opts: PriceOptions = {}): Promise<boolean> {
   try {
-    const priced = priceScenario(specOf(row), await loadPriceTable(actor));
+    const priced = priceScenario(specOf(row), await loadPriceTable(actor), { conditionalCredits: opts.conditionalCredits === true });
     const stored = await saveScenarioResult(actor, row.id, {
       version: row.version,
       pricesAsOf: priced.pricesAsOf ? new Date(priced.pricesAsOf) : new Date(),

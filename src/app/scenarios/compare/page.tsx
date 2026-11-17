@@ -29,6 +29,7 @@ function ScenarioCard({ s, winner }: { s: ComparedScenario; winner: boolean }) {
       <p className="mt-0.5 text-sm text-muted wrap-anywhere">
         {s.baseApp ? `Based on ${s.baseApp} · ` : ""}
         {s.source === "saved" ? "Saved result" : "Priced just now"}
+        {s.price.conditionalCreditsApplied ? " · New-account allowances counted" : ""}
         {s.price.pricesAsOf ? ` · prices fetched ${s.price.pricesAsOf.slice(0, 10)}` : ""}
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
@@ -59,6 +60,7 @@ function CompareTable({ comparison }: { comparison: Comparison }) {
               {scenarios.map((s) => (
                 <th key={s.id} scope="col" className="max-w-56 px-3 py-2 font-semibold wrap-anywhere">
                   {s.name}
+                  {s.price.conditionalCreditsApplied && <span className="block text-xs font-normal text-building">Includes new-account allowances</span>}
                 </th>
               ))}
             </tr>
@@ -96,7 +98,9 @@ function CompareTable({ comparison }: { comparison: Comparison }) {
                 const s = scenarios.find((x) => x.id === cell.scenarioId);
                 return (
                   <div key={cell.scenarioId} className="min-w-0 border-t border-border pt-2 first:border-t-0 first:pt-0">
-                    <dt className="min-w-0 text-muted wrap-anywhere">{s?.name ?? "Scenario"}</dt>
+                    <dt className="min-w-0 text-muted wrap-anywhere">{s?.name ?? "Scenario"}
+                      {s?.price.conditionalCreditsApplied && <span className="block text-xs text-building">Includes new-account allowances</span>}
+                    </dt>
                     <dd className="min-w-0 wrap-anywhere">
                       <span className={cell.best ? "font-semibold text-live" : "font-semibold"}>{listCost(cell.summary)}</span>
                       {cell.best && " · lowest here"}
@@ -175,6 +179,14 @@ export default async function ComparePage({ searchParams }: PageProps<"/scenario
         )}{" "}
         {DISCLAIMER}
       </p>
+
+      {comparison.mixedAllowances && (
+        <p role="status" className="mb-6 rounded-card border border-border bg-building-soft px-4 py-3 text-sm text-building wrap-anywhere">
+          <strong className="font-semibold">Different allowance rules.</strong> Some of these were priced counting new-account free-tier
+          allowances and some were not, so their credit and net figures are not like for like. List cost is unaffected. Open a scenario and
+          price it again with the same setting to put them on the same basis.
+        </p>
+      )}
 
       {comparison.mixedPriceDates && (
         <p role="status" className="mb-6 rounded-card border border-border bg-building-soft px-4 py-3 text-sm text-building wrap-anywhere">

@@ -189,4 +189,54 @@ describe.skipIf(!url)("scenario screens (Postgres)", () => {
     // Another user can never read it, even knowing the id.
     await expect(store.getScenarioResult(bob, scenario.id)).rejects.toMatchObject({ status: 404 });
   });
+
+  describe("new-account allowances", () => {
+    const priced = async (conditionalCredits: boolean) => {
+      const { loadPriceTable } = await import("@/lib/pricing/data");
+      const { priceScenario } = await import("@/lib/pricing/scenario");
+      return priceScenario(BASE_SPEC, await loadPriceTable(alice), { conditionalCredits });
+    };
+
+    it("stores the estimate the user was looking at, not the default one", async () => {
+      const on = await priced(true);
+      const off = await priced(false);
+      // The option must change the numbers on this table, or the assertions below would prove nothing.
+      expect(on.clouds.aws.netMicros).not.toBe(off.clouds.aws.netMicros);
+
+      const { scenario } = await create(alice, "allow on");
+      expect(await view.storeScenarioResult(alice, scenario, { conditionalCredits: true })).toBe(true);
+      const saved = (await store.getScenarioResult(alice, scenario.id))?.result as {
+        price: { conditionalCreditsApplied: boolean; clouds: { aws: { netMicros: number; creditMicros: number } } };
+      };
+      expect(saved.price.conditionalCreditsApplied).toBe(true);
+      expect(saved.price.clouds.aws.netMicros).toBe(on.clouds.aws.netMicros);
+      expect(saved.price.clouds.aws.creditMicros).toBe(on.clouds.aws.creditMicros);
+
+      // Reopening starts the toggle where it was saved, and the panel shows the same net.
+      const built = await view.loadBuilder(alice, scenario.id);
+      expect(built.conditionalCredits).toBe(true);
+      expect(built.result.clouds.aws.netMicros).toBe(on.clouds.aws.netMicros);
+
+      // The flag is not on the scenario row.
+      const [row] = await sql<Record<string, unknown>[]>`select * from scenario where id = ${scenario.id}`;
+      expect(JSON.stringify(row)).not.toMatch(/conditional/i);
+    });
+
+    it("defaults to the plain allowances, and a compare marks which column used the new-account ones", async () => {
+      const a = await create(alice, "allow cmp on");
+      const b = await create(alice, "allow cmp off");
+      await view.storeScenarioResult(alice, a.scenario, { conditionalCredits: true });
+      await view.storeScenarioResult(alice, b.scenario);
+      expect((await view.loadBuilder(alice, b.scenario.id)).conditionalCredits).toBe(false);
+
+      const compared = await view.loadComparison(alice, [a.scenario.id, b.scenario.id]);
+      expect(compared.ok).toBe(true);
+      if (!compared.ok) return;
+      const [onCol, offCol] = compared.comparison.scenarios;
+      expect(onCol.price.conditionalCreditsApplied).toBe(true);
+      expect(offCol.price.conditionalCreditsApplied).toBe(false);
+      expect(compared.comparison.mixedAllowances).toBe(true);
+      expect(onCol.price.clouds.aws.netMicros).not.toBe(offCol.price.clouds.aws.netMicros);
+    });
+  });
 });

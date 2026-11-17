@@ -20,7 +20,7 @@ export default async function NewScenarioPage() {
         description="Set what you expect to run, price it on all four clouds, then save it so you can compare it later."
       />
       <PriceBanners freshness={view.freshness} />
-      <ScenarioBuilder scenario={null} initialDraft={view.draft} initialResult={view.result} apps={view.apps} />
+      <ScenarioBuilder scenario={null} initialDraft={view.draft} initialResult={view.result} initialConditionalCredits={view.conditionalCredits} apps={view.apps} />
     </>
   );
 }

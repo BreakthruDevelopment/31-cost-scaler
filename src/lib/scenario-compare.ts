@@ -38,6 +38,8 @@ export const storedResultSchema = z.object({
   price: z.object({
     pricesAsOf: z.string().max(40).nullable(),
     cheapest: cloudEnum.nullable(),
+    /** Priced with new-account allowances counted. Rows stored before this existed were priced with the defaults. */
+    conditionalCreditsApplied: z.boolean().default(false),
     clouds: z.object({ aws: storedCloud, azure: storedCloud, gcp: storedCloud, oci: storedCloud }),
   }),
 });
@@ -62,6 +64,7 @@ export function summarize(price: ScenarioPrice): PriceSummary {
   return {
     pricesAsOf: price.pricesAsOf,
     cheapest: price.cheapest,
+    conditionalCreditsApplied: price.conditionalCreditsApplied,
     clouds: {
       aws: summarizeCloud(price.clouds.aws),
       azure: summarizeCloud(price.clouds.azure),
@@ -123,6 +126,8 @@ export type Comparison = {
   winnerMicros: number | null;
   /** Two or more pairs come to the same lowest total, so no single one is named. */
   winnerTied: boolean;
+  /** Some, but not all, of these were priced with new-account allowances, so their credits and net figures differ in kind. */
+  mixedAllowances: boolean;
   /** The scenarios were priced from price lists fetched on different dates, so their totals are not strictly like for like. */
   mixedPriceDates: boolean;
   /** Every distinct "prices as of" date behind the numbers, oldest first. */
@@ -159,6 +164,7 @@ export function compareScenarios(scenarios: ComparedScenario[]): Comparison {
     winner: overall.only ? { scenarioId: overall.only.scenarioId, cloud: overall.only.cloud } : null,
     winnerMicros: overall.micros,
     winnerTied: overall.micros !== null && overall.only === null,
+    mixedAllowances: new Set(scenarios.map((s) => s.price.conditionalCreditsApplied)).size > 1,
     mixedPriceDates: priceDates.length > 1,
     priceDates,
   };

@@ -1,12 +1,12 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import { requireUser } from "@/lib/auth/session";
 import { HttpError, NotFoundError } from "@/lib/errors";
 import { priceSpec } from "@/lib/pricing/data";
 import type { ScenarioPrice } from "@/lib/pricing/scenario";
-import { storeScenarioResult } from "@/lib/scenario-view";
+import { storeScenarioResult, storedConditionalCredits } from "@/lib/scenario-view";
 import { copyName } from "@/lib/scenario-draft";
 import { type ScenarioRow, createScenario, deleteScenario, getScenario, updateScenario } from "@/lib/scenarios";
 
@@ -22,11 +22,19 @@ function failure(err: unknown): ScenarioActionState {
   throw err;
 }
 
-export async function createScenarioAction(input: unknown): Promise<ScenarioActionState> {
+/**
+ * The builder's "include new-account allowances" switch is a pricing option, not part of the spec, so it travels as
+ * its own action argument: `scenarioSpec` and the `scenario` table never see it. Its only persistence is
+ * `conditionalCreditsApplied` inside the stored result, written by `storeScenarioResult`.
+ */
+const allowances = z.boolean();
+
+export async function createScenarioAction(input: unknown, conditionalCredits: unknown = false): Promise<ScenarioActionState> {
   try {
     const user = await requireUser();
+    const opts = { conditionalCredits: allowances.parse(conditionalCredits) };
     const { scenario } = await createScenario(user, input);
-    await storeScenarioResult(user, scenario);
+    await storeScenarioResult(user, scenario, opts);
     revalidatePath("/scenarios");
     return { ok: true, scenario };
   } catch (err) {
@@ -34,11 +42,12 @@ export async function createScenarioAction(input: unknown): Promise<ScenarioActi
   }
 }
 
-export async function updateScenarioAction(id: string, input: unknown): Promise<ScenarioActionState> {
+export async function updateScenarioAction(id: string, input: unknown, conditionalCredits: unknown = false): Promise<ScenarioActionState> {
   try {
     const user = await requireUser();
+    const opts = { conditionalCredits: allowances.parse(conditionalCredits) };
     const scenario = await updateScenario(user, id, input);
-    await storeScenarioResult(user, scenario);
+    await storeScenarioResult(user, scenario, opts);
     revalidatePath("/scenarios");
     return { ok: true, scenario };
   } catch (err) {
@@ -55,7 +64,11 @@ export async function duplicateScenarioAction(id: string, clientOpId: string): P
     const user = await requireUser();
     const source = await getScenario(user, id);
     const { scenario } = await createScenario(user, { name: copyName(source.name), spec: source.spec, clientOpId });
-    await storeScenarioResult(user, scenario);
+    // The copy inherits the source's allowance rule. The list has no toggle, so defaulting to off would quietly turn
+    // a copy of an allowances-on scenario into different numbers from its original, and comparing the two (the usual
+    // reason to copy) would then show a difference the user never chose.
+    const conditionalCredits = await storedConditionalCredits(user, source.id);
+    await storeScenarioResult(user, scenario, { conditionalCredits });
     revalidatePath("/scenarios");
     return { ok: true, scenario };
   } catch (err) {

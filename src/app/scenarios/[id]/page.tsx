@@ -32,7 +32,7 @@ export default async function ScenarioPage({ params }: PageProps<"/scenarios/[id
         description="Change what it runs, price it again on all four clouds, and save. Saving stores the result, so a comparison shows the numbers you saw."
       />
       <PriceBanners freshness={view.freshness} />
-      <ScenarioBuilder scenario={view.scenario} initialDraft={view.draft} initialResult={view.result} apps={view.apps} />
+      <ScenarioBuilder scenario={view.scenario} initialDraft={view.draft} initialResult={view.result} initialConditionalCredits={view.conditionalCredits} apps={view.apps} />
     </>
   );
 }
