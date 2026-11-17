@@ -23,7 +23,7 @@ function NoTotals({ state, apps, placements }: { state: "no_prices" | "none_pric
     <p role="status" className="mb-6 rounded-card border border-border bg-background px-4 py-4 text-sm text-muted wrap-anywhere">
       {state === "no_prices" ? (
         <>
-          <strong className="font-semibold text-foreground">No prices are loaded yet.</strong> The {appCount} below run on clouds whose price tables are empty, so there is no total to show.
+          <strong className="font-semibold text-foreground">No prices are loaded yet.</strong> The {appCount} in the footprint run on clouds whose price tables are empty, so there is no total to show.
         </>
       ) : (
         <>
