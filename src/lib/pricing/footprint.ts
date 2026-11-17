@@ -61,7 +61,7 @@ function sharedWorks(cloud: Cloud, profile: StackProfile, table: PriceTable, n: 
         ...base,
         detail: `A1 Flex ${ppmToText(vcpu)} OCPU / ${ppmToText(mem)} GB x 730 h`,
         notes: [`The ${s.storageGb} GB boot volume is not priced: the table has no block-volume price.`],
-        instance: { family: "vm", vcpu, memGb: mem, count: 1n, hoursPerInstance: HOURS_PER_MONTH_PPM },
+        instance: { family: "vm", vcpu, memGb: mem, count: 1n, hoursPerInstance: HOURS_PER_MONTH_PPM, copies: 1n },
       },
       [
         { key: "vm.a1.ocpu", unit: "vcpu_hour", qty: mulDivRound(vcpu, HOURS_PER_MONTH_PPM, PPM) },
@@ -86,7 +86,8 @@ function sharedWorks(cloud: Cloud, profile: StackProfile, table: PriceTable, n: 
       detail: `${snapped.size.label} x 730 h${s.storageGb > 0 && family === "postgres" ? `, ${s.storageGb} GB` : ""}`,
       snap: exact ? null : { requested: `${ppmToText(vcpu)} vCPU / ${ppmToText(mem)} GB`, listed: snapped.size.label, skuKey: snapped.size.key },
       notes,
-      instance: { family, vcpu, memGb: mem, count, hoursPerInstance: HOURS_PER_MONTH_PPM },
+      // One single-AZ instance, even when it takes `multiple` copies of the largest listed size to hold it.
+      instance: { family, vcpu, memGb: mem, count, hoursPerInstance: HOURS_PER_MONTH_PPM, copies: 1n },
     },
     [
       { key: snapped.size.key, unit: "hour", qty: HOURS_PER_MONTH_PPM * count },

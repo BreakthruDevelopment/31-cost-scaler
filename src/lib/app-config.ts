@@ -15,6 +15,7 @@ export const PARENT_SITE = { href: "https://breakthruventures.ai", label: "Explo
  */
 export const NAV_LINKS: { href: string; label: string; adminOnly?: boolean; authOnly?: boolean }[] = [
   { href: "/footprint", label: "Footprint" },
+  { href: "/scenarios", label: "Scenarios" },
   { href: "/prices", label: "Prices" },
   { href: "/advisor", label: "Advisor", authOnly: true },
   { href: "/dashboard", label: "Dashboard" },

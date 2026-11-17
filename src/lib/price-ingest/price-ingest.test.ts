@@ -381,6 +381,24 @@ describe("free tiers", () => {
     }
     expect(new Set(FREE_TIERS.map((f) => f.cloud))).toEqual(new Set(["aws", "azure", "gcp", "oci"]));
   });
+  it("tiers sharing a pool describe one allowance: same cloud, unit, quantity and period, on different skus", () => {
+    const pools = new Map<string, typeof FREE_TIERS>();
+    for (const f of FREE_TIERS) {
+      if (!f.pool) continue;
+      pools.set(f.pool, [...(pools.get(f.pool) ?? []), f]);
+    }
+    expect(pools.size).toBeGreaterThan(0);
+    for (const [pool, tiers] of pools) {
+      expect(tiers.length, pool).toBeGreaterThan(1); // a pool of one is just an allowance
+      // The engine takes the pool's size from these quantities and shares it out cheapest meter first, so they have
+      // to agree on what the one allowance is; only the sku they offset may differ.
+      for (const f of tiers) {
+        expect(f.skuKey, pool).not.toBeNull();
+        expect({ cloud: f.cloud, unit: f.unit, quantity: f.quantity, period: f.period }, pool).toEqual({ cloud: tiers[0].cloud, unit: tiers[0].unit, quantity: tiers[0].quantity, period: tiers[0].period });
+      }
+      expect(new Set(tiers.map((f) => f.skuKey)).size, pool).toBe(tiers.length);
+    }
+  });
 });
 
 describe("bearer token", () => {

@@ -92,7 +92,7 @@ function computeLine({ spec, cloud, table }: Run): Work {
           ...(exact ? [] : [`Snapped up from ${sizeText(vcpu, mem)} to the listed ${snapped.size.label}${snapped.multiple > 1n ? ` (x${snapped.multiple})` : ""}.`]),
           ...(red === "multi_az" ? ["No high-availability rate for VMs: priced as 2x the instance."] : []),
         ],
-        instance: { family: "vm", vcpu, memGb: mem, count, hoursPerInstance: HOURS_PER_MONTH_PPM },
+        instance: { family: "vm", vcpu, memGb: mem, count, hoursPerInstance: HOURS_PER_MONTH_PPM, copies: factor },
       },
       [{ key: snapped.size.key, unit: "hour", qty: hoursFor(count) }],
     );

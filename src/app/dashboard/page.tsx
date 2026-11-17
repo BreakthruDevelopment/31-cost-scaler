@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { type Column, DataList, PageIntro, Panel, StatGrid, StatTile } from "@/components/ui";
+import Link from "next/link";
+import { type Column, DataList, PageIntro, Panel, StatGrid, StatTile, buttonPrimary, buttonSecondary } from "@/components/ui";
 import { requireUserOrRedirect } from "@/lib/auth/session";
 import { MAX_SCENARIOS_PER_USER, listScenarios } from "@/lib/scenarios";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 type Row = Awaited<ReturnType<typeof listScenarios>>[number];
 
-// A placeholder until the scenario screens (issue 31.6) replace it: your own scenarios, newest change first.
+// A short overview of your own scenarios, newest change first. Building, pricing and comparing happen on /scenarios.
 export default async function DashboardPage() {
   const user = await requireUserOrRedirect();
   const scenarios = await listScenarios(user);
@@ -19,7 +20,21 @@ export default async function DashboardPage() {
   ];
   return (
     <>
-      <PageIntro section="Dashboard" title={`Hi, ${user.name}`} description={`Signed in as ${user.email}. Role: ${user.role}.`} />
+      <PageIntro
+        section="Dashboard"
+        title={`Hi, ${user.name}`}
+        description={`Signed in as ${user.email}. Role: ${user.role}.`}
+        actions={
+          <>
+            <Link href="/scenarios" className={buttonPrimary}>
+              Your scenarios
+            </Link>
+            <Link href="/scenarios/new" className={buttonSecondary}>
+              New scenario
+            </Link>
+          </>
+        }
+      />
       <StatGrid>
         <StatTile value={scenarios.length} label="Your scenarios" tone="accent" />
         <StatTile value={MAX_SCENARIOS_PER_USER} label="Limit per user" />

@@ -1,7 +1,7 @@
 import { formatUsd } from "@/lib/pricing/money";
 import { CLOUD_LABEL, type Cloud } from "@/lib/pricing/types";
 import { MAX_MAU, type OutgrowsFreeTier } from "@/lib/pricing/footprint";
-import { CONSIDER_MAX_MONTHS, MOVE_MAX_MONTHS, MOVE_MIN_SAVING_MICROS, type Verdict } from "@/lib/pricing/move";
+import { type Verdict } from "@/lib/pricing/move";
 import type { Status } from "@/components/ui";
 
 export const cloudName = (c: Cloud) => CLOUD_LABEL[c];
@@ -22,22 +22,38 @@ export function outgrowsText(o: OutgrowsFreeTier | null, requestsPerUser: number
   return `${o.mau.toLocaleString("en-US")} users a month (${requestsPerUser} requests each)`;
 }
 
-export const VERDICT: Record<Verdict, { status: Status; label: string; text: string }> = {
-  move: { status: "live", label: "Move", text: `Pays back within ${MOVE_MAX_MONTHS} months and saves at least ${formatUsd(MOVE_MIN_SAVING_MICROS)} a month.` },
-  consider: { status: "building", label: "Consider", text: `Pays back within ${CONSIDER_MAX_MONTHS} months.` },
-  stay: { status: "not-started", label: "Stay", text: `The saving does not cover the effort within ${CONSIDER_MAX_MONTHS} months.` },
-  blocked: { status: "blocked", label: "Blocked", text: "Something this app uses cannot run there." },
-  not_enough_data: { status: "not-started", label: "Not enough data", text: "A price this comparison needs is not listed." },
+/**
+ * The badge for a verdict. Only the badge: the prose explaining *why* comes from the engine's `reasons`, which are
+ * built from its own thresholds. Nothing here restates a number the engine owns, so the two cannot drift.
+ */
+export const VERDICT: Record<Verdict, { status: Status; label: string }> = {
+  move: { status: "live", label: "Move" },
+  consider: { status: "building", label: "Consider" },
+  stay: { status: "not-started", label: "Stay" },
+  blocked: { status: "blocked", label: "Blocked" },
+  not_enough_data: { status: "not-started", label: "Not enough data" },
 };
 
 export function formatDate(iso: string | null): string {
   return iso ? iso.slice(0, 10) : "never";
 }
 
+/** The longest raw source value shown when it has no hostname; enough to recognise, short enough not to break a card. */
+export const SOURCE_LABEL_MAX = 60;
+
+/**
+ * A label for a source link. Never empty: a URL with no hostname (`javascript:`, `data:`, a bare path) has nothing
+ * to show as a host, so the raw value is shown instead, trimmed and capped. React escapes it, and `safeHref` has
+ * already decided whether it may be a link — this only decides what the reader sees.
+ */
 export function sourceHost(url: string): string {
   try {
-    return new URL(url).hostname.replace(/^www\./, "");
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    if (host) return host;
   } catch {
-    return "source";
+    // Not a URL at all: fall through to the raw text.
   }
+  const raw = url.trim();
+  if (!raw) return "source";
+  return raw.length > SOURCE_LABEL_MAX ? `${raw.slice(0, SOURCE_LABEL_MAX - 1)}…` : raw;
 }

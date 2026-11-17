@@ -125,7 +125,7 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
 
   it("changing the spec drops the saved result (it no longer matches); renaming keeps it", async () => {
     const { scenario } = await s.createScenario(alice, input("results"));
-    await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { totals: [1, 2] } });
+    await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { totals: [1, 2] } });
     const renamed = await s.updateScenario(alice, scenario.id, { version: 1, name: "renamed" });
     expect(await s.getScenarioResult(alice, scenario.id)).not.toBeNull();
     await s.updateScenario(alice, scenario.id, { version: renamed.version, spec: { ...BASE_SPEC, loadBalancers: 2 } });
@@ -141,7 +141,7 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
     const { scenario } = await s.createScenario(alice, input("nul update"));
     await expect(s.updateScenario(alice, scenario.id, { version: 1, name: "x\0y" })).rejects.toMatchObject({ name: "ZodError" });
     // jsonHasNul guards the saved result, which the engine builds.
-    const nulResult = await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { note: "a\0b" } }).then(() => null, (e: unknown) => e);
+    const nulResult = await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { note: "a\0b" } }).then(() => null, (e: unknown) => e);
     expect(errorInfo(nulResult).status).toBe(400);
   });
 
@@ -199,7 +199,7 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
     for (let i = 0; i < 5; i++) {
       const { scenario } = await s.createScenario(alice, input("race delete"));
       const settled = await Promise.allSettled([
-        s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { n: i } }),
+        s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { n: i } }),
         s.deleteScenario(alice, scenario.id),
       ]);
       const failure = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
@@ -230,20 +230,32 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
       const { scenario } = await s.createScenario(alice, input("with result"));
       expect(await s.getScenarioResult(alice, scenario.id)).toBeNull();
       const asOf = new Date("2026-11-14T07:00:00Z");
-      await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: asOf, result: { v: 1 } });
-      await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: asOf, result: { v: 2 } });
+      await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: asOf, result: { v: 1 } });
+      await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: asOf, result: { v: 2 } });
       const got = await s.getScenarioResult(alice, scenario.id);
       expect(got).toMatchObject({ scenarioId: scenario.id, ownerId: alice.id, result: { v: 2 } });
       expect(got!.pricesAsOf.toISOString()).toBe(asOf.toISOString());
       expect((await sql`select count(*)::int as n from scenario_result where scenario_id = ${scenario.id}`)[0].n).toBe(1);
     });
 
+    it("discards a result priced for an older version, and keeps the one that matches", async () => {
+      const { scenario } = await s.createScenario(alice, input("stale result"));
+      const renamed = await s.updateScenario(alice, scenario.id, { version: scenario.version, name: "stale result v2" });
+      expect(await s.saveScenarioResult(alice, scenario.id, { version: renamed.version, pricesAsOf: new Date(), result: { v: "current" } })).not.toBeNull();
+      // The save that priced version 1 arrives late: dropped, and it says so rather than reporting a row.
+      expect(await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { v: "stale" } })).toBeNull();
+      expect((await s.getScenarioResult(alice, scenario.id))!.result).toEqual({ v: "current" });
+      // A version that was never real is just as stale.
+      expect(await s.saveScenarioResult(alice, scenario.id, { version: renamed.version + 99, pricesAsOf: new Date(), result: { v: "future" } })).toBeNull();
+      expect((await s.getScenarioResult(alice, scenario.id))!.result).toEqual({ v: "current" });
+    });
+
     it("another user and an admin get 404 on read and write, and nothing is stored", async () => {
       const { scenario } = await s.createScenario(alice, input("result private"));
-      await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { secret: "CANARY" } });
+      await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { secret: "CANARY" } });
       for (const stranger of [bob, admin]) {
         await rejects404(s.getScenarioResult(stranger, scenario.id));
-        await rejects404(s.saveScenarioResult(stranger, scenario.id, { pricesAsOf: new Date(), result: { overwritten: true } }));
+        await rejects404(s.saveScenarioResult(stranger, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { overwritten: true } }));
       }
       expect((await s.getScenarioResult(alice, scenario.id))!.result).toEqual({ secret: "CANARY" });
     });
@@ -257,14 +269,14 @@ describe.skipIf(!url)("scenarios (Postgres)", () => {
 
     it("results go when the scenario goes", async () => {
       const { scenario } = await s.createScenario(alice, input("cascade"));
-      await s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: {} });
+      await s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: {} });
       await s.deleteScenario(alice, scenario.id);
       expect((await sql`select count(*)::int as n from scenario_result where scenario_id = ${scenario.id}`)[0].n).toBe(0);
     });
 
     it("refuses an oversized result", async () => {
       const { scenario } = await s.createScenario(alice, input("big"));
-      await expect(s.saveScenarioResult(alice, scenario.id, { pricesAsOf: new Date(), result: { blob: "x".repeat(300_000) } })).rejects.toMatchObject({ status: 400 });
+      await expect(s.saveScenarioResult(alice, scenario.id, { version: scenario.version, pricesAsOf: new Date(), result: { blob: "x".repeat(300_000) } })).rejects.toMatchObject({ status: 400 });
     });
   });
 });
