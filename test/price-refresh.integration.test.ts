@@ -102,6 +102,26 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
       expect(await state()).toMatchObject({ usd_micros: "100000", status: "quarantined" });
       expect((await prices.listPricePoints()).some((p) => p.skuKey === "vm.2vcpu-8gb")).toBe(false);
     });
+    it("a quarantined row keeps its old value but prices nothing, and clears itself on an in-bounds price", async () => {
+      // The /admin copy says exactly this: retained, not used in estimates, cleared by a later in-bounds fetch.
+      const { loadPriceTable } = await import("@/lib/pricing/data");
+      const { REGIONS } = await import("@/lib/price-ingest/types");
+      const r0 = () => row({ region: REGIONS.aws });
+      const r0Over = (o: Partial<NormalizedRow>) => row({ region: REGIONS.aws, ...o });
+      await upsert.upsertPrices(await db(), [r0()]);
+      const [{ id }] = await sql`select id from price_point where sku_key = 'vm.2vcpu-8gb'`;
+      const priced = async () => (await loadPriceTable(null)).rows("aws", "vm.2vcpu-8gb").some((p) => p.id === id);
+      expect(await priced()).toBe(true);
+
+      await upsert.upsertPrices(await db(), [r0Over({ usdMicros: 900_000 })]);
+      expect(await state()).toMatchObject({ usd_micros: "100000", status: "quarantined" }); // value retained
+      expect((await prices.listPricePoints()).some((p) => p.id === id)).toBe(false);
+      expect(await priced()).toBe(false); // the engine's input no longer has it: the component is unpriced
+
+      await upsert.upsertPrices(await db(), [r0Over({ usdMicros: 120_000 })]);
+      expect(await state()).toMatchObject({ usd_micros: "120000", status: "active" });
+      expect(await priced()).toBe(true);
+    });
     it("more than 3x down is quarantined too; exactly 3x is accepted", async () => {
       await upsert.upsertPrices(await db(), [row()]);
       await upsert.upsertPrices(await db(), [row({ usdMicros: 33_333 })]);
@@ -147,6 +167,17 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
       expect(run.rows_quarantined).toBe(1);
       expect(run.detail.quarantined).toEqual([{ cloud: "aws", skuKey: "vm.2vcpu-8gb", oldMicros: 10_000, newMicros: 96_000, reason: "jump_over_3x" }]);
       expect(await state()).toMatchObject({ usd_micros: "10000", status: "quarantined" });
+
+      // What /admin prints as the "Rejected value" has to be the refused 96,000, not the 10,000 the row kept —
+      // reading it off the row showed the old, valid price and never the one that tripped the rule.
+      const { listQuarantinedPrices, quarantineKey, quarantineRejections } = await import("@/lib/admin-stats");
+      const listed = (await listQuarantinedPrices(SYSTEM)).find((p) => p.skuKey === "vm.2vcpu-8gb")!;
+      expect(listed.usdMicros).toBe(10_000);
+      expect((await quarantineRejections(SYSTEM)).get(quarantineKey(listed))).toMatchObject({
+        rejectedMicros: 96_000,
+        previousMicros: 10_000,
+        reason: "jump_over_3x",
+      });
     });
   });
 

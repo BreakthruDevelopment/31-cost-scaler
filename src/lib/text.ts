@@ -29,6 +29,14 @@ export function jsonHasNul(value: unknown, depth = 0): boolean {
   return Object.entries(value).some(([k, v]) => !hasNoNul(k) || jsonHasNul(v, depth + 1));
 }
 
+/**
+ * A string **shortened** to `max` characters instead of rejected for being longer. For reading back our own jsonb
+ * (a drift report, an advice row's `checks`), never for input: a length cap there makes one odd value fail its
+ * item, and a `.catch([])` around the list then turns "two mismatches" into "no drift" — a page stating the
+ * opposite of the truth. Measured in `src/lib/admin-stats.ts`: a 70-character profile key hid two real mismatches.
+ */
+export const trimmed = (max: number) => z.string().transform((s) => s.slice(0, max));
+
 /** A trimmed string of at most `max` characters, with no NUL bytes. `min` defaults to 0 (empty allowed). */
 export function text(max: number, opts: { min?: number; minMessage?: string } = {}) {
   const min = opts.min ?? 0;

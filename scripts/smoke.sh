@@ -41,11 +41,24 @@ echo "$app" | grep -Eq 'Move|Consider|Stay|Blocked|Not enough data' || fail "app
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/footprint/Bad_Name")" = "404" ] || fail "an invalid footprint app name should be 404"
 pass "public landing, footprint and app pages render with their key figures"
 
-for path in /dashboard /admin; do
+# The public price table: a row per cloud, each with its source link and fetch date, and no quarantined row.
+pricespage=$(curl -fsS "$BASE_URL/prices" | text_of) || fail "/prices did not render"
+echo "$pricespage" | grep -q 'Public list prices' || fail "/prices is missing the list price note"
+for cloud in AWS Azure 'Google Cloud' 'Oracle Cloud'; do
+  echo "$pricespage" | grep -q "$cloud" || fail "/prices has no $cloud section (are the price fixtures seeded?)"
+done
+echo "$pricespage" | grep -q 'fetched 20' || fail "/prices shows no fetch date on a price row"
+echo "$pricespage" | grep -Eq 'href="https://[^"]*"[^>]*>[a-z0-9.-]+\.(com|dev|net|org|test)' || fail "/prices shows no source link on a price row"
+filtered=$(curl -fsS "$BASE_URL/prices?cloud=oci&component=object_storage" | text_of) || fail "/prices with a filter did not render"
+echo "$filtered" | grep -q 'Oracle Cloud' || fail "/prices?cloud=oci dropped the Oracle section"
+curl -fsS "$BASE_URL/prices?cloud=mars" | text_of | grep -q 'That filter is not one we know' || fail "/prices with an unknown cloud should say so, not fail"
+pass "public price table renders with source links, fetch dates and working filters"
+
+for path in /dashboard /admin /advisor; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL$path")
   [ "$code" = "307" ] || fail "signed-out $path should redirect (307), got $code"
 done
-pass "signed-out dashboard and admin redirect"
+pass "signed-out dashboard, admin and advisor redirect"
 
 # Better Auth allows 3 sign-in/sign-up requests per 10 s per IP. Back-to-back runs (smoke right after seeding, or two
 # users in a row) can hit it. On a 429, wait out the window and retry once.
@@ -72,6 +85,14 @@ signup() {
 signup "$JAR_A" "smoke-a-$RUN_ID@example.test"
 signup "$JAR_B" "smoke-b-$RUN_ID@example.test"
 pass "two users signed up"
+
+# A plain user is not an admin: /admin redirects them, and the header never offers the link.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" "$BASE_URL/admin")" = "307" ] || fail "a plain user on /admin should be redirected (307)"
+advisorpage=$(curl -fsS -b "$JAR_A" "$BASE_URL/advisor" | text_of) || fail "/advisor did not render for a signed-in user"
+echo "$advisorpage" | grep -q 'Ask the advisor' || fail "/advisor has no ask button"
+echo "$advisorpage" | grep -q 'Your earlier answers' || fail "/advisor has no history section"
+echo "$advisorpage" | grep -q '>Admin<' && fail "a plain user is offered the admin link in the header"
+pass "a plain user is redirected off /admin and gets the advisor page"
 
 SPEC='{"users":{"mau":500,"requestsPerUser":200},"compute":{"kind":"serverless","instances":1,"vcpu":1,"memoryGb":0.5,"busyFraction":0.1},"containers":{"count":0,"vcpu":0.25,"memoryGb":0.5,"busyFraction":0.1},"database":{"vcpu":1,"memoryGb":1,"storageGb":20,"readReplicas":0},"storage":{"objectGb":10,"egressGb":20},"identity":{"mau":500},"loadBalancers":0}'
 id_of() { sed -E 's/.*"scenario":\{"id":"([^"]+)".*/\1/'; }
@@ -222,6 +243,14 @@ curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid" | text_of | grep -q
 curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid&ids=$bsid" | text_of | grep -q 'no longer exists' || fail "A must not compare against B's scenario"
 curl -fsS -b "$JAR_A" "$BASE_URL/scenarios/compare?ids=$sid&ids=$bsid" | text_of | grep -q "smoke bob $RUN_ID" && fail "B's scenario name leaked into A's comparison"
 pass "A compares two of their own scenarios; B's id is 'no longer exists'"
+
+# The advisor screen shows A's stored answers, each figure tagged with the agent and tool call it came from.
+mine_page=$(curl -fsS -b "$JAR_A" "$BASE_URL/advisor" | text_of) || fail "/advisor did not render A's history"
+echo "$mine_page" | grep -q 'Should build-tracker move?' || fail "/advisor does not show A's question"
+echo "$mine_page" | grep -Eq '(Pricing agent|Migration agent|Advisor) · c[1-9]' || fail "/advisor shows a figure with no call tag"
+echo "$mine_page" | grep -q 'Consulted:' || fail "/advisor does not say which specialists were consulted"
+curl -fsS -b "$JAR_B" "$BASE_URL/advisor" | text_of | grep -q 'Should build-tracker move?' && fail "A's question appeared on B's advisor page"
+pass "the advisor screen shows the asker's own answers, with each figure tagged to its tool call"
 
 # Versioned update
 patched=$(curl -fsS -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":1,"name":"smoke renamed"}' "$BASE_URL/api/scenarios/$sid") || fail "owner PATCH failed"
