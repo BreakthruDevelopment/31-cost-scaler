@@ -100,7 +100,7 @@ export default async function AdminPage() {
       key: "rejected",
       header: "Rejected value",
       cell: (r) => {
-        // Never r.usdMicros: quarantining changes the row's status only, so that field is still the value in use.
+        // Never r.usdMicros: quarantining changes the row's status only, so that field is the old accepted value.
         const note = rejected.get(quarantineKey(r));
         if (!note) {
           return (
@@ -120,12 +120,12 @@ export default async function AdminPage() {
       },
     },
     {
-      key: "inuse",
-      header: "Value still in use",
+      key: "kept",
+      header: "Last accepted, not in estimates",
       cell: (r) => (
         <span className="block min-w-0">
           <span className="block font-semibold tabular-nums wrap-anywhere">{formatUnitUsd(r.usdMicros)}</span>
-          <span className="block text-sm text-muted wrap-anywhere">{UNIT_LABEL[r.unit]} · accepted {fetchedOn(r.fetchedAt)}</span>
+          <span className="block text-sm text-muted wrap-anywhere">{UNIT_LABEL[r.unit]} · accepted {fetchedOn(r.fetchedAt)} · kept for reference only</span>
         </span>
       ),
     },
@@ -193,10 +193,12 @@ export default async function AdminPage() {
 
       <Panel title="Quarantined prices" count={stats.prices.quarantined}>
         <p className="mb-4 text-sm text-muted">
-          A fetched price outside its sanity bounds, or more than 3x its last value, is quarantined: the previous
-          value stays in use and nothing is shown as $0. Both numbers are below — what was refused, and what the
-          estimates still use — so the two can be compared before the bounds are changed. Check the source link; if
-          the new price is real, the next refresh after the bounds are widened will take it.
+          A fetched price outside its sanity bounds, or more than 3x the last accepted value, is quarantined. The row
+          keeps that last accepted value for reference, but it is not used in estimates: while a row is quarantined,
+          the component it priced is unpriced, and nothing is shown as $0. Both numbers are below, what was refused and
+          what was last accepted, so they can be compared. A later fetch within 3x of the last accepted value clears the
+          quarantine by itself. If the price has really moved, it trips the 3x rule on every run and stays quarantined
+          until the bounds are widened, so check the source link and act then: the next refresh after that will take it.
         </p>
         <DataList
           caption="Quarantined price rows"

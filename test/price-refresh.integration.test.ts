@@ -102,6 +102,26 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
       expect(await state()).toMatchObject({ usd_micros: "100000", status: "quarantined" });
       expect((await prices.listPricePoints()).some((p) => p.skuKey === "vm.2vcpu-8gb")).toBe(false);
     });
+    it("a quarantined row keeps its old value but prices nothing, and clears itself on an in-bounds price", async () => {
+      // The /admin copy says exactly this: retained, not used in estimates, cleared by a later in-bounds fetch.
+      const { loadPriceTable } = await import("@/lib/pricing/data");
+      const { REGIONS } = await import("@/lib/price-ingest/types");
+      const r0 = () => row({ region: REGIONS.aws });
+      const r0Over = (o: Partial<NormalizedRow>) => row({ region: REGIONS.aws, ...o });
+      await upsert.upsertPrices(await db(), [r0()]);
+      const [{ id }] = await sql`select id from price_point where sku_key = 'vm.2vcpu-8gb'`;
+      const priced = async () => (await loadPriceTable(null)).rows("aws", "vm.2vcpu-8gb").some((p) => p.id === id);
+      expect(await priced()).toBe(true);
+
+      await upsert.upsertPrices(await db(), [r0Over({ usdMicros: 900_000 })]);
+      expect(await state()).toMatchObject({ usd_micros: "100000", status: "quarantined" }); // value retained
+      expect((await prices.listPricePoints()).some((p) => p.id === id)).toBe(false);
+      expect(await priced()).toBe(false); // the engine's input no longer has it: the component is unpriced
+
+      await upsert.upsertPrices(await db(), [r0Over({ usdMicros: 120_000 })]);
+      expect(await state()).toMatchObject({ usd_micros: "120000", status: "active" });
+      expect(await priced()).toBe(true);
+    });
     it("more than 3x down is quarantined too; exactly 3x is accepted", async () => {
       await upsert.upsertPrices(await db(), [row()]);
       await upsert.upsertPrices(await db(), [row({ usdMicros: 33_333 })]);

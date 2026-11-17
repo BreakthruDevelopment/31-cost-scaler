@@ -87,7 +87,7 @@ describe.skipIf(!url)("price table and admin price views (Postgres)", () => {
     await expect(listQuarantinedPrices(null)).rejects.toMatchObject({ status: 403 });
   });
 
-  it("reports the value a quarantine refused, not the one still in use", async () => {
+  it("reports the value a quarantine refused, not the one it kept", async () => {
     // Regression: quarantining flips the row's status only, so price_point still holds the last ACCEPTED price.
     // Reading that as the "Rejected value" printed $1.00 for a row refused at $4.00 — the one number an admin
     // needs to judge the jump was the only one the page could not show.
@@ -107,7 +107,7 @@ describe.skipIf(!url)("price table and admin price views (Postgres)", () => {
     const rejections = await quarantineRejections(admin);
     const note = rejections.get(quarantineKey(row))!;
     expect(note.rejectedMicros).toBe(4_000_000);
-    // The row itself still carries the value in use, which is what the old column was showing.
+    // The row itself still carries the old accepted value, which is what the old column was showing.
     expect(row.usdMicros).toBe(1_000_000);
     expect(note.previousMicros).toBe(1_000_000);
     expect(note.reason).toBe("jump_over_3x");
