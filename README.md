@@ -1,15 +1,255 @@
-# 30 Apps Template
+# Cloud Cost Scaler
 
-The starting point for every app in Breakthru Ventures' **30 apps in 30 days** portfolio. Each app is a
-responsive web app with a Postgres database, sign-in with roles, one AI feature, and a single container
-image that deploys to AWS, Azure, Google Cloud or Oracle Cloud.
+> What will this cost next year, and on which cloud — answered from published price lists, with every figure
+> traceable to its source.
+
+**URL:** https://app31.breakthruventures.ai (**not live yet**: the first deploy goes out on the Cloud Run default
+URL, and the custom domain is added in a second step — spec 31.9 then 31.10) · **Runs on:** Google Cloud ·
+Part of [30 apps in 30 days](https://github.com/BreakthruDevelopment/ai-dev-os)
 
 ## What this app does
 
-_Each app replaces this section: the customer problem, who uses it, and what the AI feature does._
+Anyone who runs software in the cloud eventually has to answer a question a billing console cannot answer: *what
+will this cost when it is ten times bigger, and would it be cheaper somewhere else?* The cloud consoles show what
+you already spent. Vendor calculators price one cloud at a time, in that vendor's own units, and a total rarely
+says which parts of the stack it could not price. The result is a number nobody can defend in a meeting.
 
-The template ships an example "items" feature: users manage their own items, admins see everyone's, and
-an AI summary describes the list.
+The **Cloud Cost Scaler** prices a stack against the public list prices of AWS, Azure, Google Cloud and Oracle
+Cloud, normalized onto the same components and units, and shows the arithmetic. It does three things:
+
+- **The portfolio footprint.** It imports `apps.yaml` from the portfolio's infrastructure repo and prices every app
+  on all four clouds as it runs today, with each cloud's always-free allowances shown as their own negative lines
+  (`/`, `/footprint`, `/footprint/<app>`).
+- **Scenarios.** A signed-in user describes the users, compute, containers, database, storage, identity and
+  redundancy they expect, prices it on all four clouds, saves it, and compares saved scenarios side by side
+  (`/scenarios`, `/scenarios/new`, `/scenarios/compare`).
+- **A verdict on moving.** For each app and each other cloud, it computes the monthly saving, the one-time cost of
+  migrating from a checked-in effort table, the months to pay that back, any blockers, and a verdict — move,
+  consider, stay, blocked, or not enough data.
+
+The AI feature is an **advisor** that answers questions in words about those tables. It cannot produce a number of
+its own; see "The AI feature" below.
+
+## The four things that make this app honest
+
+### 1. "This costs nothing" and "we have no price for this" are different sentences
+
+This is the claim the app is built around, so it comes first. A missing price is never a zero. When a component's
+price is not in the table, the line reads `not listed` and is **left out of the total**; the cloud's total is then
+marked `Incomplete` rather than shown, and that cloud is left out of the ranking (`CloudPrice.complete` and
+`unlistedCount` in `src/lib/pricing/types.ts`; the page copy in `src/app/footprint/[app]/page.tsx`). Where no app
+has a complete price at all, the landing page says so in as many words and adds: *"This is a gap in the price
+table, not a free deployment: an amount appears only once every component it needs is listed, and a missing price
+is never counted as $0.00."* (`NoTotals` in `src/app/page.tsx`).
+
+Two smaller rules back it up:
+
+- A cloud with **no price rows loaded** gets its own banner ("prices unavailable… never counted as $0") and no
+  figure at all (`PriceBanners` in `src/components/footprint/notices.tsx`).
+- A real amount **below a cent** prints as `<$0.01`, not `$0.00` (`usd()` in `src/components/footprint/format.ts`).
+  So `$0.00` on a screen means exactly one thing: a complete total that genuinely came to zero.
+
+### 2. The engine's contract: a list estimate never understates a bill
+
+Every pricing function takes the same options object, whose first line states the rule: *a list estimate never
+understates a bill* (`PriceOptions` in `src/lib/pricing/engine.ts`). Two consequences are visible in the product:
+
+- **The 12-month new-account allowances are off by default.** They are marked `period: "12_months"` in
+  `src/lib/pricing/free-tiers.ts` and applied only when asked for; when they are skipped the result carries the
+  note "New-account allowances (12 months) are not applied." Net figures are labelled *after always-free
+  allowances* so nobody mistakes them for a steady-state bill.
+- **A pooled allowance is spent on the cheapest units first.** Some allowances are shared rather than per-SKU: AWS
+  publishes one 400,000 GB-second Lambda pool that both the x86 and the arm64 meter draw from (`pool:
+  "aws.lambda.gb"` in `free-tiers.ts`), and one instance-hour allowance can cover more than one eligible line.
+  Whoever draws first keeps the credit, so the draw order decides the bill — and the vendor documents the quantity
+  without documenting which meter a credit comes off. There is no ground truth to be accurate against. The engine
+  therefore credits the **cheapest** units first, which is the smallest credit the allowance can defensibly
+  produce; a vendor that turns out to be more generous can only make the real bill smaller than this estimate.
+  Ordering comes from the price table and is broken by SKU key or line id, never by file order, so every
+  permutation of the inputs gives the same answer (`poolDraws` and `instanceClaims` in `engine.ts`, asserted over
+  permuted tier lists in `src/lib/pricing/pricing.test.ts`).
+
+The same conservatism runs through the rest: a size the table does not list is priced at the **smallest listed size
+that holds it**, and the line says so and calls itself an upper bound; rankings and savings use the **list** total,
+never the allowance-adjusted one, because allowances belong to an account and change with whatever else that
+account runs; and amounts are integer micro-dollars throughout, so nothing is lost to floating point.
+
+### 3. What this app does not do
+
+- It **estimates from published list prices**, in one reference region per cloud (`us-east-2`, `eastus`,
+  `us-central1`, and Oracle's global list — `REGIONS` in `src/lib/price-ingest/types.ts`). No discounts, committed
+  use, reservations, spot, tax or support.
+- It is **not connected to anyone's billing account** and holds no cloud credentials. It reads public price lists
+  and one public YAML file. It **cannot see real usage**: where traffic is unknown it assumes a figure and prints
+  the assumption (500 users × 200 requests a month, 0.25 s of busy time per request, a 730-hour month —
+  `DEFAULT_FOOTPRINT_USAGE` and `SECONDS_PER_REQUEST` in `src/lib/pricing/footprint.ts`).
+- It is **not a quote and not advice about where to host**. Every page says so once, near the top
+  (`ListPriceNote`); the engine's own one-liner is *"List price estimate from public price lists at the reference
+  region. Not a quote: no discounts, committed use, tax or support."* (`DISCLAIMER` in
+  `src/lib/pricing/scenario.ts`).
+- The verdict thresholds are **a policy, not a fact**: $100 an hour of migration effort, move at a six-month
+  break-even, consider at eighteen. They are written down in one place and shown on the page that uses them.
+
+### 4. The AI feature cannot invent a number
+
+The advisor writes sentences. Every figure it shows is re-read from a recorded tool result on the server, and the
+verdict comes from code. That is a section of its own, below.
+
+## Who sees what
+
+| Audience | Can see | Notes |
+| --- | --- | --- |
+| **Anyone, signed out** | The landing page, the price table (`/prices`), the portfolio footprint and each app's page, and the move analysis at the 10× preset | Public reads only. Every public page counts one request against a per-IP limit of 60 a minute (`PUBLIC_LIMIT_PER_MINUTE` in `src/lib/ip-limit.ts`); over it, the page itself says to wait a minute |
+| **Signed-in user** | Everything above, plus their own scenarios, comparisons and advisor answers | Private to the owner. An admin cannot read them either: another user's id answers 404, never "forbidden" (`ACCESS_RULES` in `src/lib/access.ts`) |
+| **Admin** | `/admin`: counts, the price-refresh log, quarantined prices and stack-profile drift, and a "Refresh now" button | Counts only. No scenario, saved result or advice content is readable by an admin |
+| **Scheduler** | `POST /api/prices/refresh` with a bearer token | One source per run; unset token means the route is closed |
+
+## The price table
+
+`/prices` is the whole table, public: one row per normalized price, with its SKU key, component, list price and
+unit, tier range, region, the **source link** and the date it was fetched. Filter by cloud and component; the
+filters are a GET form, so a filtered view can be linked.
+
+Two notes on reading it:
+
+- A cloud with more than **40 rows** starts **folded** (`ROWS_OPEN_BY_DEFAULT` in `src/app/prices/page.tsx`); the
+  whole table is thousands of rows, which at 375px is a page nobody can scroll. The rows stay in the HTML, so the
+  server response and `curl | grep` find them — but the browser's **find-in-page does not**: a folded panel is
+  `hidden`, which is `display: none`, and Ctrl+F skips that subtree (`src/components/ui/CollapsiblePanel.tsx`). Use
+  the cloud and component filters to narrow the table instead.
+- One request returns at most **2,000 rows** (`MAX_PRICE_ROWS` in `src/lib/prices.ts`); the page says when it
+  trimmed and tells you to filter.
+
+### Where the prices come from, and how they are kept honest
+
+| Cloud | Source |
+| --- | --- |
+| AWS | The public offer files (`pricing.us-east-1.amazonaws.com/offers/v1.0/aws/<service>/current/us-east-2/index.csv`), streamed and filtered line by line |
+| Azure | The Retail Prices API, narrowed in the query itself to the reference sizes and products that are read |
+| Google Cloud | The Cloud Billing Catalog API — needs `COST_SCALER_GCP_PRICING_API_KEY`; without it Google Cloud is recorded as **prices unavailable** rather than guessed |
+| Oracle Cloud | The public price-list API, filtered to the part numbers the app prices |
+
+Refresh rules (`src/lib/price-ingest/refresh.ts`, `src/lib/price-ingest/upsert.ts`):
+
+- **One source per run.** The scheduler fires five times a night; each run takes the stalest source whose last
+  success is more than **20 hours** old, ordered by last *attempt*, so a source that keeps failing rotates to the
+  back instead of starving the others. A Postgres advisory lock on its own connection keeps two runs from
+  overlapping. An admin's "Refresh now" does one run and is allowed once every **10 minutes**
+  (`ADMIN_REFRESH_WINDOW_SECONDS`).
+- **Groups fail alone.** A failed service file is recorded with a fixed error code and leaves its existing rows
+  untouched; the other groups still land. Errors are stored as codes, never as vendor text or URLs.
+- **Quarantine.** A fetched price outside its sanity bounds for the unit, or more than **3×** away from the stored
+  one in either direction (`JUMP_FACTOR`), does not replace it: the previous value stays active and the row is
+  marked `quarantined`. The public table hides quarantined rows; `/admin` lists them with **both** numbers — what
+  was refused and what the estimates still use — so the two can be compared before anyone widens the bounds.
+- **Staleness is shown, not hidden.** When the newest fetch on any cloud is more than **72 hours** old
+  (`STALE_AFTER_HOURS` in `src/lib/footprint-calc.ts`), every page carrying figures shows a banner with the newest
+  fetch date per cloud.
+
+## The portfolio footprint
+
+The footprint is imported from `apps.yaml` in
+[30-apps-infra](https://github.com/BreakthruDevelopment/30-apps-infra) over a fixed URL
+(`src/lib/footprint/refresh.ts`), through `safeFetch`: no redirects, a byte cap, public addresses only. Everything
+in the file is treated as data — titles have control characters replaced and are length-capped before they reach
+the database (`src/lib/footprint/apps-yaml.ts`). Each import records `footprint_app.source_commit`, which is a short
+**content hash of the YAML that was fetched**, not a git commit: `raw.githubusercontent.com` does not expose one.
+
+For each app, each cloud shows the component lines with their arithmetic in words, the free-tier credits as their
+own negative lines with the vendor page that states them, the net, and **"outgrows free tier at"** — the monthly
+active users at which net cost first turns positive, found by binary search up to 10,000,000 users
+(`outgrowsFreeTier` in `src/lib/pricing/footprint.ts`). Shared parts (one database, one VM) and per-unit allowances
+are split evenly across the apps on that cloud, and the page says across how many.
+
+### "Should this app move?"
+
+Per target cloud (`src/lib/pricing/move.ts`), priced at the 10× users preset:
+
+- **Monthly saving** on list totals, on both sides.
+- **One-time cost**: a checked-in effort table — 2 h to add the cloud in `apps.yaml`, 4 h plus 0.05 h per GB to move
+  the database, 0.5 h per per-app secret, 2 h for object storage — at **$100 an hour** by default, plus the one-time
+  egress of the data leaving the source cloud at its list rate.
+- **Break-even**, and the verdict: **move** when it pays back in **6 months** or less *and* saves at least **$10 a
+  month**; **consider** within **18 months**; otherwise **stay**. Blockers win over arithmetic (object storage runs
+  only on Google Cloud here; Oracle Cloud does not read per-app secrets), and anything with an incomplete price on
+  either side is **not enough data** — with, where it helps, a clearly-labelled like-for-like figure over only the
+  components both clouds list, and a list of what was left out.
+
+All comparisons are exact integer arithmetic, and every threshold in the page's prose comes from the constant the
+engine uses, so the two cannot drift.
+
+## Scenarios
+
+Signed in: `/scenarios/new` builds a spec — users and requests each, compute (serverless or VMs, with size and busy
+fraction), containers, database (size, storage, read replicas), object storage and egress, identity MAU, load
+balancers, and a redundancy choice per part. "Price" prices it on all four clouds without saving. Bounds are in
+`src/lib/pricing/spec.ts`; there is no free text in a spec except a base-app name, so a spec cannot carry a prompt.
+
+- **50 scenarios per user** (`MAX_SCENARIOS_PER_USER`), **120 pricing runs per user per hour**
+  (`PRICE_RUNS_PER_HOUR` in `src/lib/pricing/data.ts`).
+- **Retries never duplicate.** A save carries a client op id held in a ref until the server answers; a unique index
+  on (owner, op id) means a retried save returns the first row. Edits use a version number, and a stale one is a
+  409.
+- **Compare 2 to 3** of your own scenarios (`MIN_COMPARE`/`MAX_COMPARE` in `src/lib/scenario-compare.ts`). The
+  selection travels in the URL, so a comparison can be bookmarked, and the page warns when the scenarios were
+  priced from price lists fetched on different dates.
+
+## The AI feature: the advisor
+
+`/advisor`, signed-in only. You ask a question in words ("should the helpdesk app move to Oracle Cloud?"), optionally
+pointing at an app or one of your own scenarios, and get back a headline, a recommendation, an explanation, caveats
+and a list of figures — each figure labelled with the tool call it came from.
+
+**It runs as an ADK team, with fallbacks — both of the engines the branch history argued about shipped, in a
+chain.** `runAgent()` (`src/lib/ai/agent.ts`) is the single entry point, and `@google/adk` 2.5.0 is a real
+dependency in `package.json`:
+
+1. **Team** — an ADK coordinator with two specialists wrapped as `AgentTool`s: `pricing` (footprint, price lookups,
+   scenario pricing) and `migration` (the break-even analysis). The coordinator has **no price tools** and writes the
+   answer; a specialist receives a structured request, never the user's raw words. Up to 3 delegations
+   (`TEAM_MAX_DELEGATIONS`).
+2. **Single ADK agent** with all four tools, if the team fails.
+3. **`generate({ tools })`** over the same tools, if ADK fails to import or the provider errors.
+4. **A recorded demo script over the real tools** — used when there is no model key, when the day's budget is spent,
+   or after a quota error, and always labelled as a demo answer on screen.
+
+Which engine answered is stored with the answer (`checks.engine`: `team`, `adk`, `generate` or `demo`), along with
+every attempt and why each fell through, so the history is auditable rather than reassuring.
+
+**Model:** Gemini (`gemini-flash-lite-latest` by default, `AI_MODEL` overrides) on a key whose project has no
+billing linked.
+
+**How it is kept safe:**
+
+- **Numbers come from tools, not from the model.** The answer's zod schema makes every figure cite a recorded call
+  id and a JSON pointer into that call's result. The server re-reads the number at that pointer, requires it to
+  match to the cent, requires the path to be one with a known meaning, and **writes the label and unit itself**.
+  Anything that fails is dropped and listed on the card in plain words ("it cited a tool call that never ran").
+  (`checkAdvice` in `src/lib/advice-checks.ts`.)
+- **Digits are stripped from prose.** Numbers and number words in the headline, explanation and caveats that are not
+  a surviving figure are removed, and the count is shown. A verdict's reasons, written by code, are kept verbatim.
+- **The verdict comes from code.** If `migrationBreakEven` ran, its verdict *is* the recommendation; if it never
+  ran, the answer cannot recommend a move — it becomes `not_enough_data` with a caveat saying why. Blockers from
+  the code are added as caveats.
+- **A specialist is not trusted either.** Its reply is parsed by the server, findings it did not earn are dropped,
+  and each surviving number is re-read from the recorded tool result before the coordinator ever sees it. After the
+  coordinator answers, any figure no specialist reported is dropped too. (`src/lib/ai/agent-team.ts`.)
+- **User content is data.** Both the coordinator's and the specialists' system text say the question, scenario names
+  and app titles are data and never instructions, and the question is sent JSON-quoted. Tools are read-only and
+  closed over the acting user, so the model supplies arguments, never who is asking: someone else's scenario id is
+  the same "not found" as a made-up one.
+- **Caps and budgets.** A question is at most 500 characters (`ADVICE_QUESTION_MAX`); 4 questions per user per hour
+  and 12 per 24 hours (`ADVICE_PER_HOUR`, `ADVICE_PER_DAY`); at most 9 tool calls per question
+  (`AGENT_MAX_TOOL_CALLS`), 10 model calls for the team and 14 for the whole chain (`TEAM_MAX_LLM_CALLS`,
+  `QUESTION_MAX_LLM_CALLS`); 20 s per model call, 50 s for the team and 90 s for the question. The app's daily
+  budget is `floor(GEMINI_DAILY_REQUESTS × ADVISOR_GEMINI_SHARE)` — 50 with the defaults in `.env.example` — and is
+  reserved up front and settled on the requests actually sent, so a crash cannot lose the allowance.
+- **Idempotent.** A question carries a client op id; retrying returns the stored answer and is not charged, and a
+  double tap waits for the first run instead of starting a second.
+- **Logs carry codes, never content.** Task, engine, tool names, outcomes and timings — never the question,
+  arguments or results.
+
+Answers are private to the asker (50 are kept) and are never readable by an admin.
 
 ## Architecture
 
@@ -17,350 +257,150 @@ an AI summary describes the list.
 Browser (desktop and phone)
    │ HTTPS + session cookie
    ▼
-Next.js container ── pages, server actions, route handlers (/api/*)
-   │                  auth + RBAC, zod validation, AI gateway, JSON logs, /api/health
-   ├──► Postgres (Drizzle; pgvector available for RAG)
-   └──► Model API (Gemini free tier, Claude optional, or recorded demo answers)
+Google Cloud Run ──► Next.js container (App Router)
+       │              auth + roles, zod at every boundary, per-IP and per-user limits, JSON logs
+       ├──► Postgres (Drizzle; migrations run at startup)
+       ├──► Public price lists: AWS offer files, Azure Retail Prices, Google Cloud Billing Catalog, Oracle list
+       ├──► raw.githubusercontent.com/BreakthruDevelopment/30-apps-infra: apps.yaml + the Terraform stacks
+       └──► Gemini (via Google ADK), or the recorded demo script
+            ▲
+   Cloud Scheduler ──► POST /api/prices/refresh (bearer token), five times a night, one source per run
 ```
 
 | Concern | Where |
 | --- | --- |
 | Config, validated at startup | `src/lib/env.ts` |
 | Schema and migrations | `src/lib/db/schema.ts`, `drizzle/` |
-| Sign-in, sessions, roles | `src/lib/auth/` (Better Auth + admin plugin) |
-| Access rules | `src/lib/auth/rbac.ts`, enforced in every data function |
-| AI gateway | `src/lib/ai/` — input cap, JSON schema validation, demo fallback, tool-use loop |
-| Health check | `GET /api/health` (503 if the database is down) |
+| Access rules (one row per table) | `src/lib/access.ts`, called by every data function |
+| Sign-in, sessions, roles | `src/lib/auth/` (Better Auth) |
+| Pricing engine (pure) | `src/lib/pricing/` — `engine.ts`, `free-tiers.ts`, `footprint.ts`, `scenario.ts`, `move.ts` |
+| Price ingestion | `src/lib/price-ingest/` — fetch, parse, normalize, quarantine, upsert |
+| Footprint import and drift check | `src/lib/footprint/` |
+| The advisor | `src/lib/advisor.ts`, `advisor-team.ts`, `advice-tools.ts`, `advice-checks.ts`, `advice-store.ts` |
+| Agent runtime and guardrails | `src/lib/ai/` — `agent.ts` (ADK), `agent-team.ts`, `index.ts` (`generate()`), `demo.ts` |
+| Per-IP and per-user limits | `src/lib/ip-limit.ts`, `src/lib/usage.ts` |
+| Health check | `GET /api/health` |
 
-## Auth and roles
+### API
 
-Two roles, `user` and `admin`, via Better Auth's admin plugin. **Admins manage accounts but never act as users:**
-`src/lib/auth/permissions.ts` gives `admin` create, list, get, update, set-role, ban and delete on users plus
-session revoke/delete. It withholds `impersonate`, `impersonate-admins`, `set-password` and `set-email`
-(Better Auth's default admin role includes them) and session `list`, which would expose other users' raw
-session tokens, IP addresses and user agents. `/admin/impersonate-user`, `/admin/stop-impersonating`,
-`/admin/set-user-password` and `/admin/list-user-sessions` are also in `disabledPaths`, so they return 404 even
-if a role is widened later. `update` lets an admin change another user's name and image (intended).
-Tests: `test/admin-permissions.integration.test.ts`. Don't add these permissions back; apps promise that admins
-see counts only.
+| Path | Who | What |
+| --- | --- | --- |
+| `GET /api/prices` | public | Active price rows, filtered by cloud and component |
+| `GET /api/footprint` | public | The imported footprint rows (apps, clouds, storage flag, secret count) |
+| `GET /api/move` | public; signed-in for `?scenario=` | The move analysis; a scenario basis only for its owner |
+| `POST /api/price` | signed-in, same-origin | Price an unsaved spec on all four clouds (16 KB, 120/hour) |
+| `GET`/`POST /api/scenarios`, `GET`/`PATCH`/`DELETE /api/scenarios/:id` | owner only | Scenarios; a foreign id is 404 |
+| `POST`/`GET /api/advice` | signed-in | Ask the advisor; list your own answers |
+| `POST /api/prices/refresh` | scheduler bearer token, or an admin | One refresh run |
+| `GET /api/admin/stats` | admin | Counts and price health |
+| `GET /api/health` | public | Liveness and database check |
+
+## Security
+
+- **Authorize on the server, every time.** Pages call `requireUserOrRedirect()` / `requireRoleOrRedirect()`; route
+  handlers and server actions call `requireUser()` / `requireRole()`; every data function takes the acting user and
+  calls `assertCan()` before touching a table. The integration tests walk `ACCESS_RULES`, so a new rule cannot ship
+  without a test (`test/*.integration.test.ts`).
+- **Private means private.** Scenarios, saved results and advice belong to `owner_id`. Queries add an owner filter
+  in SQL as well as the check in code, and a row that is not yours answers **404**, so ids cannot be probed. Admins
+  see counts only.
+- **Writes to public tables** (prices, footprint) are only made by the refresh job — the `SYSTEM` subject or an
+  admin pressing the button — never by a request.
+- **Input.** zod at every boundary, free text through `text()` (trimmed, capped, NUL bytes rejected), `jsonHasNul`
+  for JSON payloads, bounded numbers in every spec, and same-origin checks on the mutating routes.
+- **Outbound fetches** go to fixed hosts through `safeFetch`: no redirects, byte caps, public addresses only, so a
+  price source cannot become an SSRF.
+- **Secrets** come from the cloud's secret manager; `.env.local` is git-ignored. Error messages to clients are our
+  own wording with fixed codes — never vendor text, URLs or stack traces (`errorResponse`).
+
+## Environment variables
+
+Names only; never commit values.
+
+| Variable | Description |
+| --- | --- |
+| `APP_NAME`, `APP_URL` | Display name; public base URL for cookies and auth redirects |
+| `DATABASE_URL` | Postgres connection string |
+| `BETTER_AUTH_SECRET` | 32+ characters, session encryption |
+| `AI_PROVIDER`, `AI_MODEL` | `demo`, `gemini` or `anthropic`; optional model override |
+| `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` | Model keys. Without one, the advisor answers from the recorded demo |
+| `AI_FALLBACK_TO_DEMO`, `AI_TIMEOUT_MS` | Fall back to the demo on quota or provider failure; per-call timeout |
+| `GEMINI_DAILY_REQUESTS`, `ADVISOR_GEMINI_SHARE` | The key's free daily allowance and the advisor's share of it |
+| `COST_SCALER_REFRESH_TOKEN` | Bearer token for the scheduled price refresh; unset closes the route |
+| `COST_SCALER_GCP_PRICING_API_KEY` | Google Cloud Billing Catalog API key; unset shows Google Cloud as "prices unavailable" |
+| `MIGRATE_ON_START`, `LOG_LEVEL` | Run migrations at startup; log level |
+| `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, `SEED_USER_EMAIL`, `SEED_USER_PASSWORD` | Optional, for `pnpm db:seed` |
 
 ## Run locally
 
 ```bash
-cp .env.example .env.local          # then set BETTER_AUTH_SECRET (openssl rand -base64 32)
+cp .env.example .env.local          # set BETTER_AUTH_SECRET (openssl rand -base64 32)
 docker compose up -d db
 pnpm install
 pnpm db:migrate
-pnpm dev                             # http://localhost:3000
+pnpm seed:prices                    # synthetic price fixtures (test/fixtures/prices), no network
+pnpm seed:footprint                 # the checked-in apps.yaml fixture, no network
+pnpm dev                            # http://localhost:3000
 ```
 
-To make yourself an admin: sign up, then `SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD=... pnpm db:seed`
-while the app is running.
+To make yourself an admin, sign up first, then, while the app is running:
 
-## Design system
-
-Every app shares the Breakthru look (guide and concept: `ai-dev-os/design/`). Tokens live in `src/app/globals.css`
-(light and dark; use `bg-surface`, `text-muted`, `border-border`, `bg-accent` and the status tokens, never raw colors).
-Fonts are self-hosted with `next/font/local` in `src/app/layout.tsx` (files and licenses in `src/app/fonts/`, so builds need no network): Newsreader (`font-display`), Public Sans (`font-sans`),
-IBM Plex Mono (`font-mono`). Set the app's name once in `src/lib/app-config.ts` (`APP_TITLE`, or the `APP_NAME` variable).
-
-| Component | Location | Use |
-| --- | --- | --- |
-| `AppShell` | `src/components/app-shell.tsx` | Header (logo, app name, nav, sign in or user and sign out) and footer; wraps every page in the root layout |
-| `PageIntro` | `src/components/ui/` | Eyebrow, Newsreader headline, one-line description, actions |
-| `StatTile`, `StatGrid` | `src/components/ui/` | A number and a label; tiles stack at 375px |
-| `FilterBar` | `src/components/ui/` | Search, select filters, sort and table/cards toggle as a GET form (state in the URL) |
-| `StatusBadge` | `src/components/ui/` | Live, building, blocked, not started (neutral), healthy, degraded, down |
-| `DataList` | `src/components/ui/` | Table from 640px, cards below |
-| `Panel` | `src/components/ui/` | Titled panel; `collapsible` adds a "Show all" toggle (small client component) |
-| `DemoBadge` | `src/components/ui/` | "Demo data" label for seeded or demo content |
-
-The header links come from `NAV_LINKS` in `src/lib/app-config.ts`; each app must edit that list (the template's
-`/dashboard` and `/admin` links break if the app deletes those pages).
-
-Shared button and field classes are in `src/components/ui/styles.ts` (44px minimum height). Don't add `loading.tsx` or
-`<Suspense>` above a page that calls `requireRoleOrRedirect()` or `notFound()`.
-
-## Shared helpers
-
-Small, self-contained files every app has needed. Copy the ones you use (with their tests); each imports only from
-the paths named here. Porting migration `0001_shared-helpers.sql` into an app that already has migrations: copy the SQL under the app's own
-next number, and also add its entry to `drizzle/meta/_journal.json` and its snapshot (or run `pnpm db:generate` after copying
-`schema.ts`, which writes all three); a SQL file without a journal entry is silently never applied.
-
-Authorization still lives in `src/lib/auth/rbac.ts` and your data functions.
-
-| File | Use it when |
-| --- | --- |
-| `src/lib/errors.ts` | You throw a domain error from a data function: `NotFoundError` (404), `ConflictError` (409), `BadRequestError` (400), `TooManyRequestsError` (429), `PayloadTooLargeError` (413), `UnprocessableError` (422). `errorResponse` maps them. |
-| `src/lib/http.ts` | Every route handler: `errorResponse(err)` and `readJson(request, maxBytes)` (capped read, 413 or 400 on bad bodies). `readBodyCapped` for uploads. |
-| `src/lib/safe-error.ts` | You log an error. `safeErrorFields(err)` drops database query parameters (emails, note text); never log `err.message` of a database error yourself. |
-| `src/lib/csrf.ts` | A cookie-authenticated POST, PATCH or DELETE route handler: call `requireSameOrigin(request)` first. The Origin must equal the origin of `APP_URL` exactly, so a request from any other hostname for the same app (`www.`, an alias, a bare IP) gets 403; set `APP_URL` to the one public URL. |
-| `src/lib/owned.ts` | A table is private to its owner, admin included: `ownedBy(table, actor, ...conditions)` in every select, update and delete; zero rows means 404. |
-| `src/lib/usage.ts` + `rate_event`, `daily_usage` tables | You cap a user's attempts (`consumeRate`, sliding window, inside `db().transaction`) or an app-wide daily budget (`reserveDaily`). List your kinds in `schema.ts` (`RATE_KINDS`, `DAILY_USAGE_KINDS`) and add a migration. Keep the transaction short and at READ COMMITTED; never hold it across an AI call (see the comments in the file). |
-| `src/lib/magic.ts` | You accept an upload: `matchesMagic(type, bytes)` for PDF, PNG, JPEG, WebP. Never trust the Content-Type header. |
-| `src/lib/safe-fetch.ts` + `src/lib/ip-guard.ts` | Your server fetches a user-supplied URL (needs `ip-guard.ts`): `safeFetch(url, { maxBytes, timeoutMs })`. Checking a hostname and then fetching it is not safe (DNS rebinding), so it vets the address the connection actually uses: each hop resolves DNS once (under the deadline), `isPublicIp` must pass for every address it returns, and the socket's `lookup` hands back only that pinned address (it never resolves again); IP literals are checked up front, redirects are followed by hand and re-checked at each hop, caller headers are dropped on a cross-origin redirect, blocked names (`localhost`, `*.local`, `*.internal`) are refused, a non-2xx status is judged before the content type (429/5xx stay retryable), the body is capped both on the wire and after decompression, one deadline (plus optional `connectTimeoutMs`/`headersTimeoutMs` and an abort `signal`) covers everything, and every failure tears down the response, decoder and request. Don't write your own fetch for user URLs; if you must, keep all of that. |
-| `src/lib/ip-limit.ts` | Public (signed-out) routes: `allowPublicRequest(clientIp(request))`, 60 per minute per IP. IPv6 is keyed by /64, the table is bounded (oldest evicted), and the file explains which `X-Forwarded-For` entry to trust on each cloud. |
-| `src/lib/text.ts` | `text(max, { min })` for free-text zod fields: trims, caps, rejects NUL bytes. `jsonHasNul` for JSON payloads. |
-| `src/lib/client-op.ts` + `src/lib/use-async-action.ts` | Client patterns: `opFor` keeps one op id per intent for idempotent retries; `useAsyncAction` / `runAsyncAction` reset a button's pending state in `finally` and show an error. The dashboard uses both. |
-| `src/lib/crypto/envelope.ts` | You store a secret you must read back (OAuth tokens, API keys): see [Encrypting stored secrets](#encrypting-stored-secrets). |
-| `src/lib/jobs/*` + `job` table | Work must outlive the request (fetch a page, call a model, send mail): see [Background jobs](#background-jobs). |
-| `src/lib/db/migrate-on-start.ts` | Already wired by `instrumentation.ts`. Background work that needs the schema awaits `whenMigrated()` first. |
-| `src/lib/demo-identity.ts`, `src/lib/demo-seed-config.ts` | The app has a demo workspace: `demoSeedConfig()` runs first in `scripts/seed-demo.mts` and refuses production hosts and databases; `isDemoEmail` and `MARKER` stop public sign-ups faking a demo user. Set `MARKER` per app. |
-
-## Encrypting stored secrets
-
-`src/lib/crypto/envelope.ts` (one file plus its test, `node:crypto` only) encrypts a value with AES-256-GCM under a random
-per-value data key, which is wrapped by a key-encryption key (KEK) from the environment. There is no KMS (it costs money).
-The ciphertext is bound to its row through the AAD, so a blob copied to another row or user won't decrypt.
-
-```ts
-import { decrypt, encrypt, rowAad } from "@/lib/crypto/envelope";
-
-const aad = rowAad("bank_item", row.id, row.userId); // table, row id, owner: same call on write and read
-await db().update(bankItem).set({ accessToken: encrypt(token, aad) }).where(...);
-const token = decrypt(row.accessToken, rowAad("bank_item", row.id, row.userId)); // the only place that decrypts
+```bash
+SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD=your-secure-password pnpm db:seed
 ```
 
-- Generate a key: `openssl rand -base64 32`. Set it as `TOKEN_ENC_KEY` (cloud secret manager in production, `.env.local` locally).
-  It must decode to exactly 32 bytes. Call `validateEncryptionEnv()` at startup (for example from `instrumentation.ts`) so a
-  bad key stops the server with a clear message; it returns key ids (a hash prefix), never the key.
-- Store the blob in a `text` column. Format: `v1.<keyId>.<wrapIv>.<wrappedDek>.<wrapTag>.<iv>.<ciphertext>.<tag>`.
-- Decrypt in one function, never log what it returns, and never include the AAD or plaintext in errors. Every decrypt
-  failure throws the same `EnvelopeError`, whatever the cause.
-- Values over 64 KiB are refused (this is for small secrets such as tokens); the empty string is fine.
-- **Rotate the key:** generate a new key; set `TOKEN_ENC_KEY_PREVIOUS` to the old value and `TOKEN_ENC_KEY` to the new one;
-  deploy. New writes use the new key and old rows still decrypt. Then for each row where `needsRewrap(blob)` is true, save
-  `rewrap(blob)` (it re-wraps the data key without decrypting the value or needing the AAD). When none are left, remove
-  `TOKEN_ENC_KEY_PREVIOUS`. Losing the key loses the data: back it up in the secret manager.
-
-## Background jobs
-
-`src/lib/jobs/` (three files plus `handlers.ts`, and the `job` table in migration `0002_background-jobs.sql`) is a small Postgres
-queue with an in-process worker. No Redis, no scheduler, no extra service. Test: `test/jobs.integration.test.ts`.
-
-```ts
-// 1. Write a handler and register it (src/lib/jobs/handlers.ts). It must be idempotent: a job can run twice.
-export const handlers: JobHandlers = {
-  "fetch-link": async (job, { signal }) => {
-    const link = await getLinkForJob(job.payload.linkId as string);   // re-read the row; skip if already done
-    if (link.status === "ready") return;
-    const page = await safeFetch(link.url, { maxBytes: 2_000_000, timeoutMs: 8_000 }); // pass `signal` to anything cancellable
-    ...
-    // throw new JobError("too_large", { permanent: true })  -> failed at once, no retries
-    // throw new JobError("host_busy", { deferMs: 5_000 })   -> try again in 5 s without using an attempt
-    // any other throw                                        -> retry with backoff
-  },
-};
-
-// 2. Enqueue inside the transaction that saves the thing (after assertCan), then start it once that commits.
-const { id, created } = await db().transaction(async (tx) => {
-  // ...insert the link...
-  return enqueue(tx, { kind: "fetch-link", key: link.id, ownerId: actor.id, payload: { linkId: link.id } });
-});
-after(() => kick()); // timer mode (Azure, Oracle): route handlers and server actions; runs the due jobs now
-// Inline mode (Lambda, Cloud Run): there is no CPU after the response, so do it before responding:
-// await kick({ budgetMs: 15_000, ids: [id] });
-
-// 3. On every signed-in request (requireUser / requireUserOrRedirect, or middleware): at most one claim per 10 s per process.
-nudge(); // returns false when throttled (and always in inline mode); never waits, never throws
-// Inline mode drains old jobs the same way, inside the request and within its budget: await kick({ budgetMs: 5_000 });
-
-// 4. Status for a chip or poll endpoint (the payload is never returned), and manual Retry for a failed job.
-const status = await jobStatus(db(), { kind: "fetch-link", key: link.id, ownerId: actor.id });
-// status.state: queued | retrying | running | done | failed; retryInSeconds, attempts, maxAttempts, lastError (a code)
-await retryJob(db(), { kind: "fetch-link", key: link.id }, { ownerId: actor.id }); // "retried" | "not_found" | "already_active"
-after(() => kick()); // or await kick({ budgetMs }) in inline mode
-```
-
-An optional `onGiveUp[kind]` hook in `handlers.ts` runs when a job fails for good (permanent failure, attempts used up, or a lease that expired on the last attempt), in the same transaction as the status change (`tx` argument), so the app can mark whatever the job was working on as failed. Use only `tx` (never `db()`), no slow calls, never the `job` table; the hook is capped at `hookTimeoutMs` (5 s). If it throws or times out, the transaction rolls back and the job is marked failed without the hook (the error is logged): keep it idempotent and reconcile stuck rows. Inline mode also reaps expired last-attempt leases at the start of a `kick()`, at most 5 rows per interval. `instrumentation.ts` skips `next build` (`NEXT_PHASE`) and starts the worker without awaiting it.
-
-`instrumentation.ts` starts the worker (`startJobs()` in `src/lib/jobs/start.ts`) after `whenMigrated()` once `handlers` has an
-entry, so a template with no handlers runs no timer. `JOBS_WORKER` picks the mode: `timer` (default), `inline` (also chosen
-automatically when `AWS_LAMBDA_FUNCTION_NAME` or Cloud Run's `K_SERVICE` is set), or `off` for tests and scripts, which turns the worker, `kick` and `nudge` off.
-
-**Keys.** (`kind`, `key`) is unique across all users, so make `key` a globally unique value such as a row id (uuid). Never use
-something two users can share, like a URL: the second user's `enqueue` would return the first user's job (`created: false`) and
-the job would run once, for the first. If the same input must run per user, put the owner in the key.
-
-**How it behaves**
-
-- **Claiming.** One statement picks due rows with `for update skip locked`, marks them `running` and leases them for 60 s,
-  so any number of instances can share the table and a job goes to exactly one of them; no transaction stays open while
-  the handler runs. Each claim gets a fresh `lock_token`; `complete` and `fail` only apply to the current token, so a worker
-  that was too slow (its lease was reclaimed) can't overwrite the new run.
-- **Limits per process.** `concurrency` 2 jobs at once, each time-boxed to `timeoutMs` 25 s (its `signal` aborts; the timeout
-  must stay shorter than the 60 s lease, which `createWorker` enforces, so no heartbeat is needed). The worker ticks every 10 s.
-- **Retries.** A handler can `throw new JobError(code, { permanent?, deferMs? })`. Codes must match `[a-z0-9_]{1,40}` (anything else
-  becomes `error`), so only safe strings reach the log and `last_error`. `deferMs` (clamped to 1 s to 1 h, at most 20 times per job,
-  then an ordinary failure) retries without using an attempt. A failed attempt backs off 15 s, 1 min, 4 min; the 4th failure sets `failed` (`maxAttempts` per job, default 4),
-  and the UI offers Retry. `run_after` is a floor, not a deadline: a retry that comes due while the app sleeps runs on the next wake.
-- **Crashes.** A job whose process died stays `running` until its lease expires, then the next worker claims it again (an
-  attempt is used). A job that expires on its last attempt becomes `failed` with `last_error = 'lease_expired'`, so a job
-  that keeps killing the process can't loop forever or hold its key.
-- **Idempotent enqueue.** One queued or running job per (`kind`, `key`); a second `enqueue` returns the first (`created: false`).
-  A finished job doesn't block a new one. Without a `key` nothing is deduplicated.
-- **Data.** `payload` is for ids and small parameters (4 KB cap, never personal data or secrets); `last_error` is a short
-  code. The worker logs job id, kind, attempt, code and duration, never the payload, and handler errors are logged by name only
-  (`JobError` codes are logged as codes). Finished rows are pruned hourly: `done` after 7 days, `failed` after 30.
-- **Shutdown.** On SIGTERM a timer worker stops claiming; Next's standalone server exits without waiting, so in-flight jobs are
-  reclaimed after the lease. Handlers must be idempotent for that reason.
-- **Manual retry.** `retryJob` only retries the newest job for a key (`already_active` if a newer one is queued or running,
-  `not_found` for a stale one, a foreign owner, or a malformed id). Call it with `db()` rather than inside a transaction you still need:
-  in a true race it catches Postgres's unique violation and answers `already_active`, but that aborts the surrounding transaction.
-
-### Background work per cloud
-
-The worker is a timer inside the server process, so what it can do depends on whether the platform gives that process
-CPU between requests.
-
-| Cloud | Mode | What to do |
-| --- | --- | --- |
-| **Oracle** (long-lived container) | `timer`: the process is always up, so the worker is always on. | Enqueue, then `after(() => kick())`; `nudge()` on signed-in requests. |
-| **Azure** Container Apps (scale to zero) | `timer`: the replica runs only while visitors use it and for its scale-in cooldown (about 5 min) after the last request. Nothing wakes it on a schedule, and the Build Tracker parks Azure apps and doesn't ping them. | Same as Oracle: `after(() => kick())` starts the job at once, `nudge()` drains the rest, and retries are sized for one visit plus the cooldown. A job saved just before the app sleeps finishes on the next visit; say so in the UI ("Finishes next time you open the app"). |
-| **AWS Lambda** | `inline` (automatic): no timer, `nudge()` does nothing. Instances freeze after the response, so a timer would stall. | In the request that enqueued: `await kick({ budgetMs, ids: [id] })` before responding (default budget 15 s, under API Gateway's 29 s; each job's timeout is cut to what is left). Drain older jobs on later requests with `await kick({ budgetMs })`, again within budget. Anything left runs on a later request, or from an outside trigger (a queue or EventBridge) that calls `kick`. |
-| **Google Cloud Run** | `inline` (automatic: Cloud Run sets `K_SERVICE`), unless CPU is always allocated (`cpu_idle` off, which costs money); then set `JOBS_WORKER=timer`. With request-based CPU, a background timer barely runs. | Same as Lambda. |
-
-`kick({ budgetMs })` works in every mode. Inline mode claims nothing once the budget is spent, so the call returns within about
-the budget; timer mode stops claiming and waiting at the budget while running jobs carry on.
+With no model key the advisor answers from the recorded demo script over the real tools, which is what CI uses.
 
 ## Checks
 
 ```bash
-pnpm lint && pnpm typecheck && pnpm test   # unit tests
-TEST_DATABASE_URL=postgres://... pnpm test # plus data-layer tests against real Postgres
-pnpm build && pnpm smoke                   # end-to-end smoke test against a running app
+pnpm lint && pnpm typecheck && pnpm test   # unit tests and types
+TEST_DATABASE_URL=postgres://... pnpm test # adds the Postgres integration tests
+pnpm build && pnpm smoke                   # build, then the end-to-end smoke test against a running app
 ```
 
-CI runs all of these plus both container builds on every pull request.
+`pnpm eval:advice` runs the advisor's eval cases against a **live** model key. It is not part of CI, it bypasses
+the app's own per-user and daily counters, and it spends about 40 model requests of the key's shared free daily
+allowance — run it deliberately, not on a demo day.
 
-## Deploy
+The local prices and footprint are fixtures (`pnpm seed:prices`, `pnpm seed:footprint`), so a local total is a
+plausible shape, not a real bill. The deployed app fetches the real lists.
 
-Every push to `main` publishes a multi-arch image (x86 and ARM) to GitHub Container Registry as
-`ghcr.io/breakthrudevelopment/<repo>:sha-<commit>`. [30-apps-infra](https://github.com/BreakthruDevelopment/30-apps-infra)
-deploys those tags to AWS, Azure, Google Cloud and Oracle Cloud with Terraform; this repo holds no cloud credentials.
+## Deploy it yourself
 
-With `MIGRATE_ON_START=true` the server applies pending migrations before taking traffic, holding a Postgres
-advisory lock so instances starting together can't race. `pnpm db:migrate` does the same by hand.
+The same image runs on all four clouds; app 31 runs on **Google Cloud Run** with Postgres on a private VM. This
+repo publishes a container image on every push to `main` (`.github/workflows/publish.yml`); deployment is Terraform
+in [BreakthruDevelopment/30-apps-infra](https://github.com/BreakthruDevelopment/30-apps-infra), which also holds the
+secrets and the Cloud Scheduler job that calls `POST /api/prices/refresh`. See `infra/README.md` for what runs where.
 
-## Using the AI feature
+## 2-minute demo script
 
-| `AI_PROVIDER` | Behavior |
-| --- | --- |
-| `demo` (default) | Recorded answers from `src/lib/ai/demo.ts`; no key, no network |
-| `gemini` | Google Gemini API (`GEMINI_API_KEY`, free tier) |
-| `anthropic` | Claude (`ANTHROPIC_API_KEY`) |
+Signed out for the first three steps; everything shown is on screen.
 
-With `AI_FALLBACK_TO_DEMO=true`, a quota error or outage serves the recorded answer and the UI says so.
-
-### Images: `generate({ images })`
-
-`generate()` takes an optional `images: { mimeType, data }[]` (base64 of the raw bytes, no `data:` prefix). Limits
-(`input_rejected`, checked before any network call, in every mode): at most 4 images, 5 MB each decoded
-(`MAX_IMAGE_BYTES`), 10 MB in total, MIME `image/jpeg`, `image/png`, `image/webp`, `image/heic` or `image/heif`, valid
-base64. Gemini gets one `inlineData` part per image before the text part; Anthropic gets `image` blocks and rejects
-HEIC/HEIF. `demo` answers from the task's fixture and ignores the images. Logs carry the image count and total bytes,
-never the data. Treat text inside an image as data in your system prompt, exactly like user text.
-
-### Tool use: `generate({ tools })`
-
-For an assistant that must look things up before answering. Without `tools`, `generate()` is unchanged. With them,
-the model may call your tools for a few steps and then gives its final answer, validated against your `schema` like
-any other output.
-
-```ts
-import { generate, defineTool, ToolError } from "@/lib/ai";
-
-// Build the tools per request. The acting user is bound HERE, in the closure; the gateway never passes one.
-function itemTools(actor: Actor) {
-  return [
-    defineTool({
-      name: "search_items",
-      description: "Search the signed-in user's items by title",
-      args: z.object({ query: z.string().min(1).max(50) }),
-      kind: "read", // "read" looks things up; "propose" records something a human must confirm
-      async run({ query }, { signal }) {
-        return searchItems(actor, query, { signal }); // a data function: it calls assertCan() itself
-      },
-    }),
-  ];
-}
-
-const { data } = await generate({
-  task: "items-assistant",
-  system: "You answer questions about the user's items. ...",
-  messages: history,          // server-built: [{ role: "user" | "assistant", content }], or `prompt: "..."`
-  schema: z.object({ reply: z.string().max(600), matches: z.number().int().max(50) }),
-  tools: itemTools(actor),    // this array IS the allow-list for this call
-  maxSteps: 4,                // model calls including the final one (default 4, max 6)
-  deadlineMs: 24_000,         // wall clock for the whole loop (default 24 s, max 60 s)
-  demoContext: { query: "setup" }, // handed to demoToolScripts["items-assistant"] in demo mode
-});
-```
-
-How it behaves (all enforced in `src/lib/ai/tools.ts`, whatever the model says):
-
-- **Allow-list.** Only tools in `tools` can run, at most 3 calls per step. An unknown tool name gets an error result
-  ("that tool is not available") and nothing runs. Names are `^[a-z][a-z0-9_]{0,39}$`; `respond` is reserved; max 10.
-- **Arguments are validated with the tool's zod schema** on every call (unknown keys are stripped, so a model-supplied
-  `userId` never reaches your handler). **Decision:** an invalid call is not fatal. The error (path and message only)
-  goes back to the model as the tool result and uses one step, so the model can correct itself within the cap.
-- **Authorization stays in your code.** `run(args, { signal })` receives no actor. Close over the actor when you build
-  the tools and call `assertCan()` or an owner-filtered query inside. Treat every id in `args` as untrusted input: the
-  safest design gives the model opaque handles (`S1`, `A2`) that your handler maps back to real ids from this turn only.
-  A handler that throws gets the model a generic `tool_error` (never the message, so no "exists but forbidden" oracle);
-  throw `new ToolError("That slot was just taken.")` to give the model a short message it may read.
-- **Results are data.** Each result is sent as `{ "data": ... }`, at most 2,048 characters serialized (a bigger one is
-  replaced by a `result_too_large` error, not cut mid-JSON, so return small, shaped results). The gateway appends to
-  your system prompt that user messages and tool results are data, not instructions. Still write that rule in yours.
-- **Final answer.** The reserved `respond` tool takes your `schema` as its parameters (derived with
-  `z.toJSONSchema`, so use a `z.object` without transforms). The last step forces it (Gemini `mode: "ANY"` limited to
-  `respond`; Anthropic `tool_choice`). `respond` mixed with other calls is refused until tool results are in.
-- **Budget.** `maxSteps` and `deadlineMs` bound the loop; every provider call and every handler is cut off by the
-  remaining deadline (a handler that ignores `signal` is raced against it). Running out ends in
-  `AiError` kind `"tool_loop"` (status `"timeout"` for time): **catch it and show your own fallback**. Tokens are
-  bounded by `maxSteps x maxOutputTokens` out and by the 12,000-character input cap plus 2 KB per result in.
-  `tool_loop` does not fall back to the demo script; quota and outage errors map as in `generate()` and do.
-- **Tool argument schemas are plain, synchronous `z.object`s** (unknown keys are stripped; no async refinements or
-  transforms). A schema that throws while parsing becomes a `tool_error`.
-- **Propose handlers must be idempotent per request and check `signal.aborted` right before committing.** A handler
-  that ignores `signal` keeps running after the deadline, and its result is discarded. Once a `propose` handler has
-  started, a later provider error is rethrown instead of falling back to the demo script, which would rerun it.
-- **Opaque handles for ids.** Never show the model a real id (user, booking, slot, document). Give it handles
-  (`S1`, `A1`, `B2`) mapped to real ids server-side for this turn only, and resolve them in the handler. Authorization
-  stays in the closure plus `assertCan()` / owner-filtered queries; a handle is a convenience, not a permission.
-- **Build chat history on the server** from stored turns (a `chat_message` table keyed to the signed-in user). Never
-  accept `messages` (or any past assistant/tool turn) from the client: a user could forge assistant turns and steer
-  the model. The client sends only the new user message.
-- **No write tools.** Nothing here should create, cancel, pay or delete. Use `kind: "propose"` tools that write a
-  proposal row owned by the actor, and let the user's tap on a confirm button (the normal route, with every check) do
-  the change. Render confirm cards from the proposal row, never from model text.
-- **Gemini 3 thought signatures.** Function-call parts come back with a `thoughtSignature`, and the next request is
-  rejected (400) without it. The provider keeps the model's turn as an opaque `raw` value in the history and sends it
-  back unedited; don't filter or rebuild history around it. Parallel calls are answered together in call order.
-- **Logs.** One `ai.tool_loop` line: task, provider, steps, `calls: [{ tool, outcome, ms }]`, latency. Never
-  arguments, results, messages or prompts. Outcomes: `ok`, `unknown_tool`, `invalid_arguments`, `tool_error`,
-  `result_too_large`, `too_many_calls`, `invalid_final_answer`.
-- **Demo mode.** Add `demoToolScripts[task]` in `src/lib/ai/demo.ts`: a function of your `demoContext` returning
-  `{ steps: [{ call: { name, args } }, ...], final: (results) => answer }`. A step's `call` may be a function of the
-  results so far. The script goes through the same allow-list and argument checks and runs your real handlers, so a
-  demo proposes real data; `final` is validated against your schema. See `items-assistant` for the shape.
-- **Copying into an app.** `src/lib/ai/` imports only from `@/lib/env`, `@/lib/log` and `zod`. Copy the folder with
-  its tests; `test/ai-tools-authz.test.ts` is the authorization pattern (it uses `@/lib/auth/rbac`).
-
-### Embeddings: `embed()`
-
-`embed({ task, texts, kind: "document" | "query" })` from `src/lib/ai` returns
-`{ vectors, provider, model, dims, demo, latencyMs }`: 768-dim, L2-normalized vectors (fits pgvector's 2,000-dim
-HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (`input_rejected`).
-
-- `gemini` calls `batchEmbedContents` with `AI_EMBED_MODEL` (default `gemini-embedding-2`, which takes the task in
-  the text: `task: search result | query: …` / `title: none | text: …`; set `gemini-embedding-001` to use `taskType`).
-  Changing the model changes the vector space: stored vectors must be re-embedded.
-- `demo` (and a missing key, or a provider failure while `AI_FALLBACK_TO_DEMO=true`) uses deterministic hashed
-  bag-of-words vectors, model `demo-hash-768`: lexical but meaningful, offline.
-- `AI_PROVIDER=anthropic` has no embeddings API, so it embeds with Gemini if `GEMINI_API_KEY` is set, else demo.
-- Always store `model` with each vector and only compare vectors with the same model; a demo fallback reports
-  `demo: true` and the demo model name so vector spaces are never mixed.
-- `AI_TIMEOUT_MS` (default 20000, max 22000) bounds every provider call, `generate()` and `embed()` alike.
-- Logs carry task, provider, model, count and latency, never the text.
+1. **The landing page (`/`).** Read the four tiles — apps in the footprint, list price estimate, free-tier credit,
+   net — and the per-cloud cards under them. Where some placements have no complete price, the line below the tiles
+   says how many of the app-on-cloud figures the totals cover and that a missing price is never counted as $0.00;
+   where none does, the panel says that outright instead of showing zeros. **Proves** the headline claim: the app
+   counts what it can price and says what it cannot.
+2. **`/prices`, filtered.** Pick a cloud and a component in the filter bar. Open the source link on one row and
+   point at the fetch date beside it. **Proves** every number traces to a page the vendor publishes, with the day it
+   was read. (Mention that big clouds start folded and that filtering — not Ctrl+F — is how you find a row.)
+3. **`/footprint`, then one app.** On the app page, show the four cloud cards side by side: the component lines with
+   their arithmetic, the credits as their own negative lines, "outgrows free tier at", and a line reading **not
+   listed** where a price is missing — with the cloud's total shown as *Incomplete* rather than a number. Scroll to
+   **"Should this app move?"**: the verdict badge, the reasons, the monthly saving, the one-time cost at $100 an
+   hour, and the break-even. **Proves** points 1 and 2 together: missing prices never become zeros, and the verdict
+   is arithmetic you can read.
+4. **Sign in, then `/scenarios/new`.** Set users to ten times what the app has now, press **Price**, and show the
+   four clouds re-priced. Save it. **Proves** the forward-looking question the billing console cannot answer.
+5. **`/scenarios`, tick two, Compare.** Show the cloud-by-cloud table, the lowest list cost called out, and a cell
+   reading *Incomplete* where a cloud is missing a price. **Proves** that comparison keeps the same rules as
+   pricing.
+6. **`/advisor`.** Ask "should this app move to Oracle Cloud, and what would it cost?" On the answer card, point at
+   each figure's tag — the tool call and the specialist it came from — and at the "Consulted" line listing the
+   delegations. If a figure was dropped, read the reason aloud. **Proves** the AI writes words, not numbers.
+7. **`/admin`** (admin account, if there is time). The price-refresh log with per-source outcomes, the quarantined
+   rows showing **both** the refused price and the one still in use, and the stack-profile drift check. **Proves**
+   there is a maintenance story behind the numbers, not just a pretty page.
+</content>
+</invoke>
