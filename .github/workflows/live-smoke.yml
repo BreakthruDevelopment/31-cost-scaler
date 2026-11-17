@@ -8,8 +8,6 @@ name: Live smoke
 #
 # scripts/smoke.sh is plain bash + curl, so there is no pnpm install here.
 on:
-  push:
-    branches: [claude/live-smoke]
   workflow_dispatch:
     inputs:
       base_url:
@@ -36,5 +34,5 @@ jobs:
           persist-credentials: false
       - name: Smoke test (live mode)
         env:
-          BASE_URL: ${{ inputs.base_url || 'https://cost-scaler-189497094271.us-central1.run.app' }}
+          BASE_URL: ${{ inputs.base_url }}
         run: bash scripts/smoke.sh
