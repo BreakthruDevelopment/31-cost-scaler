@@ -193,12 +193,14 @@ export default async function AdminPage() {
 
       <Panel title="Quarantined prices" count={stats.prices.quarantined}>
         <p className="mb-4 text-sm text-muted">
-          A fetched price outside its sanity bounds, or more than 3x the last accepted value, is quarantined. The row
-          keeps that last accepted value for reference, but it is not used in estimates: while a row is quarantined,
-          the component it priced is unpriced, and nothing is shown as $0. Both numbers are below, what was refused and
-          what was last accepted, so they can be compared. A later fetch within 3x of the last accepted value clears the
-          quarantine by itself. If the price has really moved, it trips the 3x rule on every run and stays quarantined
-          until the bounds are widened, so check the source link and act then: the next refresh after that will take it.
+          A quarantined price is not used in estimates, and most clear themselves: act only on a row that stays here. A
+          later fetch within 3x of the last accepted value and inside the bounds clears it. If the price has really
+          moved, it trips the 3x rule on every run: check the source link, widen the bounds, and the next refresh will
+          take it. Meanwhile nothing is shown as $0, and an estimate is hit one of two ways. If the row was a
+          component&apos;s only price (data transfer, storage, identity, load balancer, serverless), that component is
+          left out and its cloud is marked not comparable. If it was one of several VM or database sizes, estimates
+          snap up to the next size still active, so that cloud still looks complete but its figure is too high (left
+          out if no larger size is active).
         </p>
         <DataList
           caption="Quarantined price rows"
