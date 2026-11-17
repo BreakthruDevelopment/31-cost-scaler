@@ -6,7 +6,7 @@ function Cell({ label, children, className = "" }: { label: string; children: Re
   return (
     <div className={`min-w-0 ${className}`}>
       <dt className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</dt>
-      <dd className="mt-0.5 text-sm [overflow-wrap:anywhere]">{children}</dd>
+      <dd className="mt-0.5 text-sm wrap-anywhere">{children}</dd>
     </div>
   );
 }

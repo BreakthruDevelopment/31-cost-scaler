@@ -75,6 +75,36 @@ export function cloudTotals(items: readonly { clouds: readonly CloudCost[] }[], 
   });
 }
 
+/**
+ * What the landing page's summary may say about a set of per-cloud totals.
+ *
+ * - `empty`: no app runs anywhere, so there is nothing to total.
+ * - `no_prices`: apps run, but not one cloud they use has any price rows loaded.
+ * - `none_priced`: apps run on clouds that do have prices, but no app has a complete price on any of them.
+ * - `priced`: at least one app-on-cloud figure is complete, so dollar totals may be shown.
+ *
+ * `omitted` counts the app-on-cloud placements left out of those totals (`placements - counted`). It is the only
+ * honest trigger for the "totals leave some out" note: a cloud with no apps omits nothing, and a *priced* cloud
+ * with one unpriced app omits one. An amount is never shown for an omitted placement, and never summed as $0.
+ */
+export type TotalsSummary = {
+  state: "empty" | "no_prices" | "none_priced" | "priced";
+  /** App-on-cloud placements across all clouds (one app on two clouds counts twice). */
+  placements: number;
+  /** Placements with a complete list price: the ones the dollar totals are built from. */
+  counted: number;
+  omitted: number;
+};
+
+export function summariseTotals(totals: readonly CloudTotal[]): TotalsSummary {
+  const placements = totals.reduce((s, t) => s + t.apps, 0);
+  const counted = totals.reduce((s, t) => s + t.counted, 0);
+  const withApps = totals.filter((t) => t.apps > 0);
+  const state: TotalsSummary["state"] =
+    counted > 0 ? "priced" : withApps.length === 0 ? "empty" : withApps.every((t) => t.state === "unavailable") ? "no_prices" : "none_priced";
+  return { state, placements, counted, omitted: placements - counted };
+}
+
 /** The cheapest cloud by LIST total among those with a complete price; null when none qualifies. Ties go to the first cloud in display order. */
 export function cheapestCloud(clouds: readonly CloudCost[]): Cloud | null {
   let best: CloudCost | null = null;
