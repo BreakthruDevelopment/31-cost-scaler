@@ -90,16 +90,25 @@ export async function loadBuilder(actor: Actor, id: string | null): Promise<Buil
 /**
  * Price a saved scenario and store the result, so a later comparison reads the numbers the owner saw. Called after a
  * create or an update; a pricing failure is logged and swallowed, because the scenario itself is already saved.
+ *
+ * `row` is the version this priced, and `saveScenarioResult` checks it against the locked scenario row. Loading the
+ * price table and pricing take time, so a second save of the same scenario can commit a newer version in between;
+ * these numbers then describe a spec that is gone, and the newer save's result is the one to keep. The write is
+ * dropped in that case (`false` here), which is not a failure: nothing told the user this result was stored, and a
+ * scenario with no usable stored result is simply priced again at comparison time.
  */
-export async function storeScenarioResult(actor: Actor, row: ScenarioRow): Promise<void> {
+export async function storeScenarioResult(actor: Actor, row: ScenarioRow): Promise<boolean> {
   try {
     const priced = priceScenario(specOf(row), await loadPriceTable(actor));
-    await saveScenarioResult(actor, row.id, {
+    const stored = await saveScenarioResult(actor, row.id, {
+      version: row.version,
       pricesAsOf: priced.pricesAsOf ? new Date(priced.pricesAsOf) : new Date(),
       result: toStoredResult(priced),
     });
+    return stored !== null;
   } catch (err) {
     log.warn("scenario_result_store_failed", { scenarioId: row.id, error: err instanceof Error ? err.message : "unknown" });
+    return false;
   }
 }
 

@@ -121,10 +121,62 @@ describe.skipIf(!url)("scenario screens (Postgres)", () => {
   it("re-prices instead of trusting a stored result written in another shape", async () => {
     const a = await create(alice, "cmp stale shape");
     const b = await create(alice, "cmp plain");
-    await store.saveScenarioResult(alice, a.scenario.id, { pricesAsOf: new Date(), result: { v: 99, price: { nonsense: true } } });
+    await store.saveScenarioResult(alice, a.scenario.id, { version: a.scenario.version, pricesAsOf: new Date(), result: { v: 99, price: { nonsense: true } } });
     const compared = await view.loadComparison(alice, [a.scenario.id, b.scenario.id]);
     expect(compared.ok).toBe(true);
     if (compared.ok) expect(compared.comparison.scenarios[0].source).toBe("computed");
+  });
+
+  /**
+   * Two saves overlapping on one scenario, interleaved on purpose: save A commits version 2 and pauses where the
+   * real code pauses (between pricing and the write), save B commits version 3 and stores its own result, then A
+   * resumes and tries to write. A's numbers are for a spec that no longer exists, so the write must not land —
+   * otherwise `loadComparison` reads them back and shows an admin the cost of the wrong spec.
+   */
+  it("discards a priced result whose scenario moved on while it was being priced", async () => {
+    const pricing = await import("@/lib/pricing/scenario");
+    const data = await import("@/lib/pricing/data");
+    const compare = await import("@/lib/scenario-compare");
+
+    const { scenario } = await create(alice, "race save");
+    // Two specs the price table tells apart: 20 GB of egress against 2000 GB.
+    const specA = { ...BASE_SPEC, storage: { objectGb: 10, egressGb: 20 } };
+    const specB = { ...BASE_SPEC, storage: { objectGb: 10, egressGb: 2_000 } };
+    const v2 = await store.updateScenario(alice, scenario.id, { version: scenario.version, spec: specA });
+
+    const table = await data.loadPriceTable(alice);
+    const pricedA = pricing.priceScenario(specA, table);
+    const pricedB = pricing.priceScenario(specB, table);
+    expect(pricedA.clouds.aws.totalMicros).not.toBe(pricedB.clouds.aws.totalMicros);
+
+    // Save A: priced version 2, now paused in flight, holding the row it read.
+    let resumeA = () => {};
+    const pausedA = new Promise<void>((resolve) => {
+      resumeA = resolve;
+    });
+    const saveA = (async () => {
+      await pausedA;
+      return store.saveScenarioResult(alice, scenario.id, { version: v2.version, pricesAsOf: new Date(), result: compare.toStoredResult(pricedA) });
+    })();
+
+    // Save B, while A is still paused: version 3, and its result stored.
+    const v3 = await store.updateScenario(alice, scenario.id, { version: v2.version, spec: specB });
+    expect(v3.version).toBe(v2.version + 1);
+    expect(await store.saveScenarioResult(alice, scenario.id, { version: v3.version, pricesAsOf: new Date(), result: compare.toStoredResult(pricedB) })).not.toBeNull();
+
+    // A resumes last and is told its write was dropped, rather than being told it saved.
+    resumeA();
+    expect(await saveA).toBeNull();
+
+    // What a comparison will read back is version 3's numbers.
+    const saved = compare.readStoredResult((await store.getScenarioResult(alice, scenario.id))?.result);
+    expect(saved?.clouds.aws.totalMicros).toBe(pricedB.clouds.aws.totalMicros);
+    const other = await create(alice, "race other");
+    const compared = await view.loadComparison(alice, [scenario.id, other.scenario.id]);
+    expect(compared.ok).toBe(true);
+    if (!compared.ok) return;
+    expect(compared.comparison.scenarios[0]).toMatchObject({ id: scenario.id, source: "saved" });
+    expect(compared.comparison.scenarios[0].price.clouds.aws.totalMicros).toBe(pricedB.clouds.aws.totalMicros);
   });
 
   it("stores a result a later comparison can read back", async () => {

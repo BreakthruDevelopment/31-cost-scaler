@@ -5,6 +5,7 @@ import { type Actor } from "@/lib/auth/rbac";
 import { assertCan } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { BadRequestError, ConflictError, NotFoundError } from "@/lib/errors";
+import { log } from "@/lib/log";
 import { ownedBy } from "@/lib/owned";
 import { scenarioSpec } from "@/lib/pricing/spec";
 import { jsonHasNul, text } from "@/lib/text";
@@ -148,21 +149,45 @@ export async function deleteScenario(actor: Actor, id: string): Promise<void> {
 
 export type ScenarioResultRow = typeof schema.scenarioResult.$inferSelect;
 
-/** Store (replace) the latest result of one of the actor's scenarios. The shape of `result` belongs to the pricing engine (31.3). */
-export async function saveScenarioResult(actor: Actor, id: string, input: { pricesAsOf: Date; result: unknown }): Promise<ScenarioResultRow> {
+/**
+ * Store (replace) the latest result of one of the actor's scenarios. The shape of `result` belongs to the pricing
+ * engine (31.3).
+ *
+ * `version` is the scenario version these prices were computed for, and is checked inside the lock. Pricing happens
+ * between reading the scenario and writing its result, so two overlapping saves can reach here out of order: one
+ * that priced version 2 while another already committed version 3 and stored its result. Writing the older numbers
+ * then leaves `scenario_result` describing a spec that no longer exists, and a comparison renders it as current.
+ * A write whose version has moved on is **discarded** and returns null: the newer result in the row is already the
+ * right one, there is nothing to repair, and the caller is told it did not land rather than that it saved.
+ */
+export async function saveScenarioResult(
+  actor: Actor,
+  id: string,
+  input: { version: number; pricesAsOf: Date; result: unknown },
+): Promise<ScenarioResultRow | null> {
   const sid = parseId(id);
   const { scenarioResult } = schema;
   const when = z.date().parse(input.pricesAsOf);
+  const version = z.number().int().min(1).parse(input.version);
   assertNoNul(input.result);
   const bytes = Buffer.byteLength(JSON.stringify(input.result ?? null));
   if (bytes > MAX_RESULT_BYTES) throw new BadRequestError("Result too large");
-  // Ownership check and write in one transaction, with the scenario row locked: a concurrent delete waits and then
-  // finds nothing to attach to (404), instead of hitting the foreign key (500).
+  // Ownership check, version check and write in one transaction, with the scenario row locked: a concurrent delete
+  // waits and then finds nothing to attach to (404) instead of hitting the foreign key (500), and a concurrent
+  // update's new version is already committed and visible by the time this read returns.
   return db().transaction(async (tx) => {
     const { scenario } = schema;
-    const [owned] = await tx.select({ ownerId: scenario.ownerId }).from(scenario).where(ownedBy(scenario, actor, eq(scenario.id, sid))).for("update");
+    const [owned] = await tx
+      .select({ ownerId: scenario.ownerId, version: scenario.version })
+      .from(scenario)
+      .where(ownedBy(scenario, actor, eq(scenario.id, sid)))
+      .for("update");
     if (!owned) throw new NotFoundError();
     assertCan(actor, "write", "scenario_result", owned);
+    if (owned.version !== version) {
+      log.info("scenario_result_stale_discarded", { scenarioId: sid, pricedVersion: version, currentVersion: owned.version });
+      return null;
+    }
     const [row] = await tx
       .insert(scenarioResult)
       .values({ scenarioId: sid, ownerId: actor.id, pricesAsOf: when, result: input.result ?? null })
