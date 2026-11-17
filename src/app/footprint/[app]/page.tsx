@@ -18,6 +18,24 @@ export async function generateMetadata({ params }: PageProps<"/footprint/[app]">
   return { title: `Footprint: ${app.slice(0, 40)}` };
 }
 
+/** One source row: a link only for an https URL, and always a visible label (`sourceHost` never returns ""). */
+function SourceRow({ s }: { s: { url: string; fetched: string } }) {
+  const href = safeHref(s.url);
+  const label = sourceHost(s.url);
+  return (
+    <li className="min-w-0 wrap-anywhere">
+      {href ? (
+        <a href={href} rel="noopener noreferrer" className="text-accent hover:underline">
+          {label}
+        </a>
+      ) : (
+        <span>{label}</span>
+      )}{" "}
+      <span className="text-muted">({s.fetched === "checked in" ? "allowance checked in" : `fetched ${formatDate(s.fetched)}`})</span>
+    </li>
+  );
+}
+
 function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
   const incomplete = !c.unavailable && !c.cost.complete;
   return (
@@ -57,7 +75,7 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
             </p>
           )}
           {!incomplete && (
-            <p className="mt-2 text-sm [overflow-wrap:anywhere]">
+            <p className="mt-2 text-sm wrap-anywhere">
               <span className="text-muted">Outgrows free tier at: </span>
               {outgrowsText(c.outgrows, DEFAULT_FOOTPRINT_USAGE.requestsPerUser)}
             </p>
@@ -67,12 +85,12 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
             {c.cost.lines.map((l) => (
               <li key={l.id} className="min-w-0 py-2">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{l.label}</span>
+                  <span className="min-w-0 font-medium wrap-anywhere">{l.label}</span>
                   <span className="shrink-0 text-right">{l.micros === null ? "not listed" : perMonth(l.micros)}</span>
                 </div>
-                <p className="text-muted [overflow-wrap:anywhere]">{l.detail}</p>
+                <p className="text-muted wrap-anywhere">{l.detail}</p>
                 {l.snap && (
-                  <p className="text-muted [overflow-wrap:anywhere]">
+                  <p className="text-muted wrap-anywhere">
                     Priced at {l.snap.listed} ({l.snap.requested} is not a listed size).
                   </p>
                 )}
@@ -80,7 +98,7 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
             ))}
             {c.cost.creditLines.map((l) => (
               <li key={l.id} className="flex min-w-0 items-baseline justify-between gap-3 py-2">
-                <span className="min-w-0 [overflow-wrap:anywhere]">
+                <span className="min-w-0 wrap-anywhere">
                   <span className="font-medium">Credit: </span>
                   {l.label}
                 </span>
@@ -91,7 +109,7 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
           {c.cost.notes.length > 0 && (
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">
               {c.cost.notes.map((n) => (
-                <li key={n} className="[overflow-wrap:anywhere]">
+                <li key={n} className="wrap-anywhere">
                   {n}
                 </li>
               ))}
@@ -102,16 +120,7 @@ function CloudCard({ c, cheapest }: { c: CloudCost; cheapest: boolean }) {
               <h4 className="font-semibold">Sources</h4>
               <ul className="mt-1 space-y-1">
                 {c.sources.map((s) => (
-                  <li key={s.url} className="min-w-0 [overflow-wrap:anywhere]">
-                    {safeHref(s.url) ? (
-                      <a href={safeHref(s.url)!} rel="noopener noreferrer" className="text-accent hover:underline">
-                        {sourceHost(s.url)}
-                      </a>
-                    ) : (
-                      <span>{sourceHost(s.url)}</span>
-                    )}{" "}
-                    <span className="text-muted">({s.fetched === "checked in" ? "allowance checked in" : `fetched ${formatDate(s.fetched)}`})</span>
-                  </li>
+                  <SourceRow key={s.url} s={s} />
                 ))}
               </ul>
             </div>
@@ -141,7 +150,7 @@ function MoveCard({ m, from }: { m: MoveOption; from: string }) {
         </h3>
         <StatusBadge status={v.status} label={v.label} />
       </div>
-      <ul className="mt-3 list-disc space-y-1 pl-5 text-sm [overflow-wrap:anywhere]">
+      <ul className="mt-3 list-disc space-y-1 pl-5 text-sm wrap-anywhere">
         {r.reasons.map((x) => (
           <li key={x}>{x}</li>
         ))}
@@ -169,14 +178,25 @@ function MoveCard({ m, from }: { m: MoveOption; from: string }) {
         </div>
       </dl>
       {r.verdict === "not_enough_data" && (
-        <p className="mt-3 rounded-card bg-background px-3 py-2 text-sm [overflow-wrap:anywhere]">
-          <strong className="font-semibold">Not enough data for a like-for-like comparison.</strong> A move is only judged when both clouds have a complete list price for the same components. Missing prices are never treated as zero.
-        </p>
+        <div className="mt-3 rounded-card bg-background px-3 py-2 text-sm wrap-anywhere">
+          <p>
+            <strong className="font-semibold">Not enough data for a like-for-like comparison.</strong> A move is only judged when both clouds have a complete list price for the same components. Missing
+            prices are never treated as zero.
+          </p>
+          {r.likeForLike && (
+            <p className="mt-2 text-muted">
+              On the {r.likeForLike.comparedLineIds.length} component{r.likeForLike.comparedLineIds.length === 1 ? "" : "s"} both clouds do list, {cloudName(r.from)} comes to{" "}
+              {perMonth(r.likeForLike.fromMicros)} and {cloudName(r.to)} to {perMonth(r.likeForLike.toMicros)}. That is a partial figure for context only, not the saving from moving
+              {r.likeForLike.leftOut.length > 0 && <>: it leaves out {r.likeForLike.leftOut.map((l) => l.label).join(", ")}, with no listed price on one of the two clouds</>}. The move&apos;s own saving
+              stays unknown until every component is priced on both.
+            </p>
+          )}
+        </div>
       )}
       {r.notes.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">
           {r.notes.map((n) => (
-            <li key={n} className="[overflow-wrap:anywhere]">
+            <li key={n} className="wrap-anywhere">
               {n}
             </li>
           ))}
@@ -200,7 +220,7 @@ export default async function FootprintAppPage({ params }: PageProps<"/footprint
         <span aria-hidden>←</span>&nbsp;All apps
       </Link>
       <PageIntro section="Footprint" title={row.title} />
-      <p className="-mt-4 mb-8 max-w-2xl text-lg text-muted [overflow-wrap:anywhere]">
+      <p className="-mt-4 mb-8 max-w-2xl text-lg text-muted wrap-anywhere">
         <span className="font-mono text-base">{row.name}</span> runs on{" "}
         {row.clouds.map((c) => (c === "aws" || c === "azure" || c === "gcp" || c === "oci" ? cloudName(c) : c)).join(", ")}
         {row.storage ? ", with an object-storage bucket" : ""}

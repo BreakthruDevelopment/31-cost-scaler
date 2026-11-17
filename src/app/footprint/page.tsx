@@ -30,12 +30,12 @@ export default async function FootprintPage() {
           <ul aria-label="Apps in the footprint" className="grid gap-4 lg:grid-cols-2">
             {data.items.map(({ row, clouds }) => (
               <li key={row.name} className="min-w-0 rounded-card border border-border bg-surface p-4">
-                <h3 className="font-semibold [overflow-wrap:anywhere]">
+                <h3 className="font-semibold wrap-anywhere">
                   <Link href={`/footprint/${encodeURIComponent(row.name)}`} className="text-accent hover:underline">
                     {row.title}
                   </Link>
                 </h3>
-                <p className="mb-2 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                <p className="mb-2 font-mono text-xs text-muted wrap-anywhere">
                   {row.name} · {row.clouds.map((c) => (c === "aws" || c === "azure" || c === "gcp" || c === "oci" ? cloudName(c) : c)).join(", ")}
                 </p>
                 <ul aria-label={`${row.title} cost by cloud`}>

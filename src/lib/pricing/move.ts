@@ -1,7 +1,7 @@
 import { BadRequestError } from "@/lib/errors";
 import { priceFootprintApp, DEFAULT_FOOTPRINT_USAGE, appsOnCloud, type FootprintApp } from "./footprint";
 import { type PriceOptions } from "./engine";
-import { type Micros, type Ppm, PPM, costMicros, decimalToPpm, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
+import { type Micros, type Ppm, PPM, costMicros, decimalToPpm, formatUsd, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
 import { priceScenarioCloud } from "./scenario";
 import type { ScenarioSpec } from "./spec";
 import { tieredCost } from "./table";
@@ -199,8 +199,8 @@ export function migrationBreakEven(input: MoveInput): MoveResult {
     verdict = v.verdict;
     months = v.months ? v.months.hundredths : null;
     if (saving <= 0n) reasons.push("Moving does not lower the monthly cost.");
-    else if (verdict === "move") reasons.push(`Pays back within ${MOVE_MAX_MONTHS} months and saves at least $10 a month.`);
-    else if (verdict === "consider") reasons.push(saving < MOVE_MIN_SAVING_MICROS ? `Pays back within ${CONSIDER_MAX_MONTHS} months, but saves under $10 a month.` : `Pays back in more than ${MOVE_MAX_MONTHS} and at most ${CONSIDER_MAX_MONTHS} months.`);
+    else if (verdict === "move") reasons.push(`Pays back within ${MOVE_MAX_MONTHS} months and saves at least ${formatUsd(MOVE_MIN_SAVING_MICROS)} a month.`);
+    else if (verdict === "consider") reasons.push(saving < MOVE_MIN_SAVING_MICROS ? `Pays back within ${CONSIDER_MAX_MONTHS} months, but saves under ${formatUsd(MOVE_MIN_SAVING_MICROS)} a month.` : `Pays back in more than ${MOVE_MAX_MONTHS} and at most ${CONSIDER_MAX_MONTHS} months.`);
     else reasons.push(`Takes more than ${CONSIDER_MAX_MONTHS} months to pay back.`);
   }
 

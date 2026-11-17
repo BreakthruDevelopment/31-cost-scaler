@@ -19,7 +19,7 @@ export function RateLimited({ section, retryHref }: { section: string; retryHref
 /** Every total on these pages is an estimate from public list prices; say so once per page, near the top. */
 export function ListPriceNote({ assumption }: { assumption: string }) {
   return (
-    <p className="mb-6 rounded-card border border-border bg-surface px-4 py-3 text-sm text-muted [overflow-wrap:anywhere]">
+    <p className="mb-6 rounded-card border border-border bg-surface px-4 py-3 text-sm text-muted wrap-anywhere">
       <strong className="font-semibold text-foreground">List price estimate.</strong> Not a quote or a bill. Figures use public list prices in each cloud&apos;s reference region and assume {assumption}. Net is shown after always-free allowances; rankings use list price.
     </p>
   );
