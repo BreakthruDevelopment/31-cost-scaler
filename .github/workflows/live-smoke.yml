@@ -1,0 +1,38 @@
+name: Live smoke
+
+# Runs scripts/smoke.sh against a deployed app from the outside. It needs no secrets: the script signs up its own
+# two users over HTTP. It never receives DATABASE_URL (production's database is not reachable from CI and this
+# workflow must not be given it), and it runs no migrations and seeds nothing. A failure prints
+# "SMOKE FAIL: <reason>" and exits non-zero; do not add retries or skips, a smoke that passes against an
+# unpopulated app proves nothing.
+#
+# scripts/smoke.sh is plain bash + curl, so there is no pnpm install here.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: App URL to test (use https://app31.breakthruventures.ai once DNS resolves)
+        required: true
+        default: https://cost-scaler-189497094271.us-central1.run.app
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Live smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Smoke test (live mode)
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: bash scripts/smoke.sh
