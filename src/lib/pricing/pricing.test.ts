@@ -4,13 +4,14 @@ import { describe, expect, it } from "vitest";
 import { fixtureRowsWithIds } from "../../../test/fixtures/pricing-table";
 import { finishCloud, type Work } from "./engine";
 import { type FootprintApp, outgrowsFreeTier, priceFootprintApp, priceFootprintAppEverywhere } from "./footprint";
-import { costMicros, decimalToPpm, formatUsd, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
+import { FREE_TIERS, type FreeTier } from "./free-tiers";
+import { HOURS_PER_MONTH_PPM, costMicros, decimalToPpm, formatUsd, mulDivRound, ppmToText, toPpm, toSafe } from "./money";
 import { CONSIDER_MAX_MONTHS, MOVE_MIN_SAVING_MICROS, blockersFor, migrationBreakEven, verdictFor } from "./move";
 import { TEN_X_PRESET } from "./presets";
 import { likeForLikeOf, pickCheapest, priceScenario, priceScenarioCloud } from "./scenario";
 import { BASE_SPEC, type ScenarioSpec } from "./spec";
 import { buildPriceTable, listedSizes, snapUp, tieredCost } from "./table";
-import { CLOUD_ORDER, type Cloud, type CloudPrice, type PriceRow } from "./types";
+import { CLOUD_ORDER, type Cloud, type CloudPrice, type PriceRow, type PriceTable } from "./types";
 
 const ROWS = fixtureRowsWithIds();
 const T = buildPriceTable(ROWS);
@@ -21,6 +22,14 @@ const line = (s: ScenarioSpec, cloud: Cloud, id: string) => {
   if (!l) throw new Error(`no line ${id}`);
   return l;
 };
+/** A priced line whose only usage is `gbHours` on one GB-hour meter, costed from the table. */
+const gbHourWork = (id: string, skuKey: string, gbHours: number, table: PriceTable = T, cloud: Cloud = "aws"): Work => {
+  const qty = toPpm(gbHours);
+  const cost = tieredCost(table.rows(cloud, skuKey), qty);
+  return { id, component: "compute", label: id, detail: "", snap: null, notes: [], status: "priced", micros: cost.micros, rows: cost.used, usage: [{ skuKey, unit: "gb_hour", qty }] };
+};
+/** Every ordering of `xs` (used to prove a result does not depend on the order its inputs arrive in). */
+const permutations = <X,>(xs: readonly X[]): X[][] => (xs.length <= 1 ? [[...xs]] : xs.flatMap((x, i) => permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest])));
 
 describe("money stays in integer micro-dollars", () => {
   it("parses quantities exactly", () => {
@@ -254,6 +263,9 @@ describe("priceScenario", () => {
     expect(l.label).toBe("compared without Database (PostgreSQL): not listed on Oracle Cloud");
     expect(l.totalsMicros).toEqual({ aws: 1, azure: 2, gcp: 3, oci: 4 });
     expect(l.cheapest).toBe("aws");
+    // Nothing is priced everywhere (Oracle lacks compute, AWS never had a database line): no subtotal to offer.
+    const noCommon = { aws: mk("aws", [line("compute", 1)]), azure: full("azure", 2), gcp: full("gcp", 3), oci: mk("oci", [line("compute", null), line("database", 4)]) };
+    expect(likeForLikeOf(noCommon)).toBeNull();
   });
   it("is deterministic and reports the oldest fetch date", () => {
     expect(priceScenario(BASE_SPEC, T)).toEqual(r);
@@ -476,12 +488,14 @@ describe("engine follow-ups from the 31.3 review", () => {
   const dbSpec = (database: ScenarioSpec["redundancy"]["database"]) => spec({ redundancy: { ...BASE_SPEC.redundancy, database } });
   const dbCredit = (database: ScenarioSpec["redundancy"]["database"]) => one(dbSpec(database), "aws", { conditionalCredits: true }).creditLines.find((c) => c.id === "credit.aws.database")?.micros;
 
-  it("x86 and arm64 Lambda share one 400,000 GB-second pool", () => {
-    const work = (id: string, skuKey: string): Work => ({ id, component: "containers", label: id, detail: "", snap: null, notes: [], status: "priced", micros: 0n, rows: [], usage: [{ skuKey, unit: "gb_hour", qty: toPpm(100) }] });
-    const { price } = finishCloud("aws", [work("x86", "serverless.lambda.gb"), work("arm", "serverless.lambda.gb.arm64")], T);
-    // 100 GB-hours on x86 at $0.06, then only the 11 left of the 111 on arm64 at $0.048 (not another 100).
-    expect(price.creditLines.map((c) => c.micros)).toEqual([-6_000_000, -528_000]);
-    expect(price.creditMicros).toBe(-6_528_000);
+  it("x86 and arm64 Lambda share one 400,000 GB-second pool, spent on the cheaper meter first", () => {
+    const { price } = finishCloud("aws", [gbHourWork("x86", "serverless.lambda.gb", 100), gbHourWork("arm", "serverless.lambda.gb.arm64", 100)], T);
+    const credit = (suffix: string) => price.creditLines.find((c) => c.id.endsWith(suffix))!.micros;
+    // One 111 GB-hour pool for both meters. arm64 is the cheaper one ($0.048), so it draws its 100 hours first and
+    // only the 11 left over are credited against x86 at $0.06: the dearer usage is what stays billed.
+    expect(credit("serverless.lambda.gb.arm64")).toBe(-100 * 48_000);
+    expect(credit("serverless.lambda.gb")).toBe(-11 * 60_000);
+    expect(price.creditMicros).toBe(-5_460_000);
   });
   it("a single-AZ 12-month database allowance does not cover the second copy of a multi-AZ database", () => {
     const single = dbCredit("single");
@@ -490,6 +504,10 @@ describe("engine follow-ups from the 31.3 review", () => {
     expect(dbCredit("multi_region")).toBe(single);
     const multi = one(dbSpec("multi_az"), "aws", { conditionalCredits: true });
     expect(multi.creditMicros).toBeGreaterThan(-multi.lines.find((l) => l.id === "database")!.micros!);
+    // The one-copy credit is the line x 1/copies, which is exact only while the multi-AZ line is exactly 2x the
+    // single one. That holds because the eligible micro size has no HA rate; if one is ever listed, this fails.
+    expect(T.rows("aws", "postgres.2vcpu-1gb.ha")).toHaveLength(0);
+    expect(line(dbSpec("multi_az"), "aws", "database").micros).toBe(2 * line(dbSpec("single"), "aws", "database").micros!);
   });
   it("gives a like-for-like saving on a move to Oracle, informational only", () => {
     const apps: FootprintApp[] = [{ name: "plain", clouds: ["aws"], storage: false, secretCount: 0 }];
@@ -507,5 +525,84 @@ describe("engine follow-ups from the 31.3 review", () => {
   it("has no like-for-like figure when both sides are complete", () => {
     const apps: FootprintApp[] = [{ name: "plain", clouds: ["aws"], storage: false, secretCount: 0 }];
     expect(migrationBreakEven({ app: apps[0], apps, from: "aws", to: "gcp", table: T, scenario: TEN_X_PRESET }).likeForLike).toBeNull();
+  });
+});
+
+/**
+ * An allowance that more than one meter or line can claim has to be spent somewhere, and the choice changes the
+ * money. It used to be spent on whichever claimant came first in `FREE_TIERS` or in the array of lines — so the bill
+ * depended on file layout. The engine now spends it on the cheapest units first (see `engine.ts`): the smallest
+ * credit the allowance can defensibly give, so a list estimate still never understates a bill.
+ */
+describe("pooled free-tier credit is order-independent and conservative (#18)", () => {
+  const LAMBDA_POOL = "aws.lambda.gb";
+  const creditOf = (cloud: Cloud, works: Work[], table: PriceTable = T, tiers: readonly FreeTier[] = FREE_TIERS) => finishCloud(cloud, works, table, {}, 1n, tiers).price.creditMicros;
+
+  it("credits the same whichever order the two Lambda meters are declared in", () => {
+    const pooled = FREE_TIERS.filter((t) => t.pool === LAMBDA_POOL);
+    expect(pooled).toHaveLength(2);
+    const swapped = FREE_TIERS.map((t) => (t.pool === LAMBDA_POOL ? (t === pooled[0] ? pooled[1] : pooled[0]) : t));
+    expect(swapped.filter((t) => t.pool === LAMBDA_POOL)).toEqual([pooled[1], pooled[0]]); // really the other way round
+    const works = [gbHourWork("x86", "serverless.lambda.gb", 100), gbHourWork("arm", "serverless.lambda.gb.arm64", 100)];
+    // 100 GB-hours on each meter, one 111 GB-hour pool: arm64 ($0.048) draws first, x86 ($0.06) keeps the remaining 11.
+    for (const tiers of [FREE_TIERS, swapped]) for (const order of permutations(works)) expect(creditOf("aws", order, T, tiers)).toBe(-5_460_000);
+  });
+
+  it("gives one answer for every permutation of four pooled meters, and it is the smallest any order could give", () => {
+    const PRICES: Record<string, number> = { "pooled.a": 7_000, "pooled.b": 11_000, "pooled.c": 3_000, "pooled.d": 11_000 }; // b and d tie on price
+    const USED = 30; // GB-hours on each meter: 120 in all
+    const QUANTITY = 100; // one pool, smaller than the usage, so the split decides the money
+    const keys = Object.keys(PRICES);
+    const table = buildPriceTable(
+      keys.map((skuKey): PriceRow => ({ id: `aws:${skuKey}:0`, cloud: "aws", component: "serverless", skuKey, unit: "gb_hour", usdMicros: PRICES[skuKey], tierStart: 0, tierEnd: null, sourceUrl: "https://example.test/pool", fetchedAt: "2026-11-14T03:00:00.000Z" })),
+    );
+    const tiers = keys.map((skuKey): FreeTier => ({ cloud: "aws", appliesTo: "serverless", skuKey, label: skuKey, quantity: QUANTITY, unit: "gb_hour", period: "always", pool: "test.pool", sourceUrl: "https://example.test/pool" }));
+    const works = keys.map((skuKey) => gbHourWork(skuKey, skuKey, USED, table));
+
+    // Every order the pool could be drawn in, costed by hand. The engine must return the smallest of them.
+    const byHand = (order: string[]) => {
+      let left = QUANTITY;
+      return order.reduce((sum, k) => {
+        const take = Math.min(USED, left);
+        left -= take;
+        return sum - take * PRICES[k];
+      }, 0);
+    };
+    const hands = permutations(keys).map(byHand);
+    const cheapestFirst = Math.max(...hands); // credits are negative, so the smallest credit is the least negative
+    expect(cheapestFirst).toBe(-(30 * 3_000 + 30 * 7_000 + 30 * 11_000 + 10 * 11_000)); // c, a, then the b/d tie by sku key
+    expect(Math.min(...hands)).toBe(-(30 * 11_000 + 30 * 11_000 + 30 * 7_000 + 10 * 3_000)); // dearest first: $0.16 more credit
+    for (const ts of permutations(tiers)) for (const ws of permutations(works)) expect(creditOf("aws", ws, table, ts)).toBe(cheapestFirst);
+  });
+
+  it("spends an instance-hour allowance on the cheapest eligible line first, whatever order the lines were built in", () => {
+    const vm = (id: string, micros: bigint): Work => ({ id, component: "compute", label: id, detail: "", snap: null, notes: [], status: "priced", micros, rows: [], usage: [], instance: { family: "vm", vcpu: toPpm(4), memGb: toPpm(24), count: 1n, hoursPerInstance: HOURS_PER_MONTH_PPM, copies: 1n } });
+    // Oracle's Always Free A1 is 3,000 OCPU-hours; each line burns 4 x 730 = 2,920, so one line and a sliver fit.
+    const works = [vm("cheap", 2_000_000n), vm("dear", 10_000_000n)];
+    for (const order of permutations(works)) {
+      expect(creditOf("oci", order)).toBe(-(2_000_000 + 273_973)); // all of the cheap line, then 80 of the dear line's 2,920 hours
+    }
+  });
+
+  it("clamps a bad `copies` count to one copy instead of throwing out of the credit step", () => {
+    const db = (copies: bigint): Work => ({ id: "database", component: "database", label: "db", detail: "", snap: null, notes: [], status: "priced", micros: 13_980_000n, rows: [], usage: [], instance: { family: "postgres", vcpu: toPpm(2), memGb: toPpm(1), count: 1n, hoursPerInstance: HOURS_PER_MONTH_PPM, copies } });
+    const credit = (copies: bigint) => finishCloud("aws", [db(copies)], T, { conditionalCredits: true }).price.creditMicros;
+    expect(credit(1n)).toBe(-13_980_000); // the 12-month RDS allowance covers the whole single-copy line
+    for (const bad of [0n, -2n]) expect(credit(bad)).toBe(credit(1n));
+  });
+
+  it("is not reachable from today's producers: only one meter of the Lambda pool is ever used", () => {
+    // The fix changes no figure the app shows today, which is why it needs its own tests: the scenario builder
+    // (31.6) is what makes a second pooled meter reachable.
+    const pooled = new Set(FREE_TIERS.filter((t) => t.pool).map((t) => t.skuKey));
+    const apps: FootprintApp[] = [{ name: "a", clouds: ["aws"], storage: false, secretCount: 0 }];
+    const used = new Set<string>();
+    for (const cloud of CLOUD_ORDER) {
+      for (const p of [priceFootprintApp({ app: apps[0], cloud, n: 1, table: T }), priceScenarioCloud(BASE_SPEC, cloud, T).price]) {
+        for (const c of p.creditLines) used.add(c.id);
+      }
+    }
+    const pooledCredits = [...used].filter((id) => [...pooled].some((k) => k && id.endsWith(k)));
+    expect(pooledCredits).toEqual(["credit.aws.serverless.lambda.gb.arm64"]);
   });
 });

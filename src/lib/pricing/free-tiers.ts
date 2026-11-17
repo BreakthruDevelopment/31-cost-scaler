@@ -21,7 +21,11 @@ export type FreeTier = {
   sourceUrl: string;
   /** For `instance_hour` rows: the largest instance that qualifies, and what the quantity counts. */
   instance?: { maxVcpu: number; maxMemoryGb: number; meter: "instance_hours" | "vcpu_hours"; singleCopy?: boolean };
-  /** Tiers with the same pool draw from one quantity (applied in file order), so a credit can't be counted twice. */
+  /**
+   * Tiers with the same pool draw from one quantity, so a credit can't be counted twice. They must all declare the
+   * same quantity, unit, cloud and period (`price-ingest.test.ts`). The draw order is NOT the order they appear in
+   * here: the engine spends the pool on the cheapest meter first, so the expensive usage stays billed (`engine.ts`).
+   */
   pool?: string;
 };
 
