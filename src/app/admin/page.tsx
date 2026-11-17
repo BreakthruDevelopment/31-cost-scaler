@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DriftResult } from "@/components/admin/drift-result";
 import { RefreshButton } from "@/components/admin/refresh-button";
 import { COMPONENT_LABEL, UNIT_LABEL, cloudLabel, fetchedOn, formatUnitUsd, safeSourceHref, sourceHost } from "@/components/prices/format";
 import { type Column, DataList, PageIntro, Panel, StatGrid, StatTile, StatusBadge, type Status } from "@/components/ui";
@@ -145,8 +146,6 @@ export default async function AdminPage() {
     },
   ];
 
-  const driftFiles = drift ? Object.entries(drift.files) : [];
-  const unchecked = driftFiles.filter(([, state]) => state === "unavailable").map(([cloud]) => cloud);
 
   return (
     <>
@@ -192,16 +191,26 @@ export default async function AdminPage() {
       </Panel>
 
       <Panel title="Quarantined prices" count={stats.prices.quarantined}>
-        <p className="mb-4 text-sm text-muted">
-          A quarantined price is not used in estimates, and most clear themselves: act only on a row that stays here. A
-          later fetch within 3x of the last accepted value and inside the bounds clears it. If the price has really
-          moved, it trips the 3x rule on every run: check the source link, widen the bounds, and the next refresh will
-          take it. Meanwhile nothing is shown as $0, and an estimate is hit one of two ways. If the row was a
-          component&apos;s only price (data transfer, storage, identity, load balancer, serverless), that component is
-          left out and its cloud is marked not comparable. If it was one of several VM or database sizes, estimates
-          snap up to the next size still active, so that cloud still looks complete but its figure is too high (left
-          out if no larger size is active).
-        </p>
+        <div className="mb-4 space-y-2 text-sm text-muted">
+          <p>Act only on a row that stays here: most clear themselves.</p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              A quarantined price is not itself used in estimates. Nothing is shown as $0.
+            </li>
+            <li>
+              A later fetch within 3x of the last accepted value and inside the bounds clears it.
+            </li>
+            <li>
+              A price that has really moved more than 3x stays here on every run. Widening the bounds does not change
+              that, and there is no admin action to accept it yet.
+            </li>
+            <li>
+              While a row is quarantined, an estimate that depended on it can be wrong in either direction, and its
+              cloud may or may not be flagged (Incomplete on Scenarios, not comparable on Footprint). This table does not
+              say which estimates are affected.
+            </li>
+          </ul>
+        </div>
         <DataList
           caption="Quarantined price rows"
           rows={quarantined}
@@ -222,34 +231,7 @@ export default async function AdminPage() {
             The footprint import has not stored a drift check yet. It runs with the footprint source.
           </div>
         ) : (
-          <>
-            <p className="mb-4 text-sm text-muted wrap-anywhere">
-              The sizes the estimates assume, checked against each cloud&apos;s{" "}
-              <span className="font-mono">main.tf</span> in the infrastructure repo. Checked {fetchedOn(drift.checkedAt)}.
-              {unchecked.length > 0 ? ` Not checked this run: ${unchecked.join(", ")} (the file could not be read).` : ""}
-            </p>
-            {drift.mismatches.length === 0 ? (
-              <p role="status" className="rounded-card border border-border bg-live-soft px-4 py-3 text-sm text-live">
-                No drift: every value in the checked-in profiles still matches the stacks.
-              </p>
-            ) : (
-              <div role="alert" className="rounded-card border border-border bg-blocked-soft px-4 py-3 text-sm text-blocked">
-                <p className="font-semibold">
-                  {drift.mismatches.length} value{drift.mismatches.length === 1 ? "" : "s"} no longer match the stacks.
-                  Every estimate that uses {drift.mismatches.length === 1 ? "it" : "them"} is wrong until the profile
-                  is updated.
-                </p>
-                <ul className="mt-2 list-disc space-y-1 pl-5">
-                  {drift.mismatches.map((m) => (
-                    <li key={m.key} className="wrap-anywhere">
-                      <span className="font-mono">{m.key}</span>: profile says {m.expected}, the stack says{" "}
-                      {m.actual ?? "nothing we could find"}.
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </>
+          <DriftResult drift={drift} checkedOn={fetchedOn(drift.checkedAt)} />
         )}
       </Panel>
     </>
