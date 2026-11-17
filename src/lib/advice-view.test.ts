@@ -68,6 +68,27 @@ describe("toAdviceView", () => {
     expect(view.checks.delegations.map((d) => d.agent)).toEqual(["pricing", "migration"]);
   });
 
+  it("keeps every delegation when one agent name is unusually long", () => {
+    // Same shape as the drift bug: `agent` was capped, a long one failed its item, and `.catch([])` emptied the
+    // whole array — so the card dropped "Consulted: …" and read as if one agent had answered alone.
+    const longAgent = "pricing-and-commitment-discount-specialist-agent";
+    const view = toAdviceView(
+      row({ checks: { delegations: [{ agent: longAgent, llmCalls: 2, outcome: "ok" }, { agent: "migration", llmCalls: 1, outcome: "ok" }] } }),
+    );
+    expect(view.checks.delegations).toHaveLength(2);
+    expect(view.checks.delegations[0].agent).toBe(longAgent.slice(0, 40));
+    expect(view.checks.delegations[1].agent).toBe("migration");
+  });
+
+  it("keeps every figure attribution when one agent name is unusually long", () => {
+    const longAgent = "migration-and-break-even-analysis-specialist";
+    const view = toAdviceView(row({ checks: { figureAgents: { c2: longAgent, c3: "pricing" } } }));
+    // A capped value used to empty the record, which attributed every figure to "Advisor" instead.
+    expect(view.checks.figureAgents.c2).toBe(longAgent.slice(0, 40));
+    expect(view.checks.figureAgents.c3).toBe("pricing");
+    expect(figureSource("c3", view.checks.figureAgents)).toBe("Pricing agent · c3");
+  });
+
   it("does not show any number the output did not carry", () => {
     const view = toAdviceView(row());
     expect(view.output.figures).toEqual(output.figures);

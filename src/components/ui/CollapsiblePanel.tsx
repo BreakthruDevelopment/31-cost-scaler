@@ -4,6 +4,12 @@ import { useId, useState, type ReactNode } from "react";
 import { PanelHeader } from "./PanelHeader";
 import { buttonSecondary } from "./styles";
 
+/**
+ * A panel whose body folds. The body stays in the HTML (so the server response and `curl | grep` have it), but
+ * `hidden` is `display: none`, so the browser's find-in-page does **not** look inside a folded panel. Don't claim
+ * it does. Making it searchable means `hidden="until-found"` plus a `beforematch` listener that sets `open`, so the
+ * toggle's label doesn't contradict what is on screen — worth doing only with a real browser to verify it in.
+ */
 export function CollapsiblePanel({
   headingId,
   action,

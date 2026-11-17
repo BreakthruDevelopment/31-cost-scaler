@@ -87,6 +87,54 @@ describe.skipIf(!url)("price table and admin price views (Postgres)", () => {
     await expect(listQuarantinedPrices(null)).rejects.toMatchObject({ status: 403 });
   });
 
+  it("reports the value a quarantine refused, not the one still in use", async () => {
+    // Regression: quarantining flips the row's status only, so price_point still holds the last ACCEPTED price.
+    // Reading that as the "Rejected value" printed $1.00 for a row refused at $4.00 — the one number an admin
+    // needs to judge the jump was the only one the page could not show.
+    const { listQuarantinedPrices, quarantineRejections, quarantineKey } = await import("@/lib/admin-stats");
+    await sql`delete from price_point where region = 'test-region'`;
+    await sql`delete from price_refresh where source = 'aws_other'`;
+    await sql`insert into price_point (cloud, component, sku_key, region, unit, usd_micros, source_url, status, fetched_at)
+              values ('aws', 'vm', 'apv.jump', 'test-region', 'hour', 1000000, 'https://example.test/src', 'quarantined', '2026-11-10T00:00:00Z')`;
+    // Two runs: the jump was refused in the older one, and the newer run has notes about other SKUs only.
+    await sql`insert into price_refresh (source, trigger, outcome, started_at, detail) values ('aws_other', 'scheduler', 'ok', '2026-11-11T00:00:00Z',
+      ${sql.json({ quarantined: [{ cloud: "aws", skuKey: "apv.jump", oldMicros: 1_000_000, newMicros: 4_000_000, reason: "jump_over_3x" }, "a note in a shape we never wrote", { cloud: "aws", skuKey: "apv.nonote" }] })})`;
+    await sql`insert into price_refresh (source, trigger, outcome, started_at, detail) values ('aws_other', 'scheduler', 'ok', '2026-11-12T00:00:00Z',
+      ${sql.json({ quarantined: [{ cloud: "azure", skuKey: "apv.other", oldMicros: null, newMicros: 9_000_000, reason: "out_of_bounds" }] })})`;
+
+    const rows = await listQuarantinedPrices(admin);
+    const row = rows.find((r) => r.skuKey === "apv.jump")!;
+    const rejections = await quarantineRejections(admin);
+    const note = rejections.get(quarantineKey(row))!;
+    expect(note.rejectedMicros).toBe(4_000_000);
+    // The row itself still carries the value in use, which is what the old column was showing.
+    expect(row.usdMicros).toBe(1_000_000);
+    expect(note.previousMicros).toBe(1_000_000);
+    expect(note.reason).toBe("jump_over_3x");
+    expect(note.at.toISOString()).toBe("2026-11-11T00:00:00.000Z");
+    // One unreadable note and one without a price never hide the notes around them.
+    expect(rejections.get("aws|apv.nonote")).toBeUndefined();
+    expect(rejections.get("azure|apv.other")?.previousMicros).toBeNull();
+    // A new SKU refused on its first fetch has a note but no row, so nothing claims a kept value for it.
+    expect(rows.some((r) => r.skuKey === "apv.other")).toBe(false);
+
+    await expect(quarantineRejections(alice)).rejects.toMatchObject({ status: 403 });
+    await expect(quarantineRejections(null)).rejects.toMatchObject({ status: 403 });
+    await sql`delete from price_refresh where source = 'aws_other'`;
+    await sql`delete from price_point where region = 'test-region'`;
+  });
+
+  it("keeps the newest note when a SKU was refused more than once", async () => {
+    const { quarantineRejections } = await import("@/lib/admin-stats");
+    await sql`delete from price_refresh where source = 'aws_other'`;
+    for (const [when, micros] of [["2026-11-11T00:00:00Z", 4_000_000], ["2026-11-13T00:00:00Z", 7_000_000]] as const) {
+      await sql`insert into price_refresh (source, trigger, outcome, started_at, detail) values ('aws_other', 'scheduler', 'ok', ${when},
+        ${sql.json({ quarantined: [{ cloud: "aws", skuKey: "apv.twice", oldMicros: 1_000_000, newMicros: micros, reason: "jump_over_3x" }] })})`;
+    }
+    expect((await quarantineRejections(admin)).get("aws|apv.twice")?.rejectedMicros).toBe(7_000_000);
+    await sql`delete from price_refresh where source = 'aws_other'`;
+  });
+
   it("profile drift is an admin read, and is null until the footprint import has stored one", async () => {
     const { profileDrift } = await import("@/lib/admin-stats");
     await sql`delete from price_refresh where source = 'footprint'`;

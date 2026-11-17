@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { adviceOutput, FIXED_HEADLINE } from "@/lib/advice-checks";
+import { trimmed } from "@/lib/text";
 
 /**
  * A stored `advice` row as the advisor screen renders it. `output` and `checks` are jsonb, so they are re-parsed
@@ -23,6 +24,10 @@ const DROP_REASON: Record<string, string> = {
   duplicate: "it repeated a figure already shown",
 };
 
+/**
+ * Each field falls back to "" on its own, so no length here can fail the item and empty the list: the caps match
+ * what the write path already enforces (`adviceOutput`: label 60, path 80, call `c1`–`c9`) and `reason` is an enum.
+ */
 export const droppedFigure = z.object({
   label: z.string().max(60).catch(""),
   call: z.string().max(8).catch(""),
@@ -30,12 +35,27 @@ export const droppedFigure = z.object({
   reason: z.string().max(40).catch(""),
 });
 
+/**
+ * `agent` is trimmed, not capped: it was the one field here that could *reject* its item, and an item that fails
+ * empties the whole `delegations` array through the `.catch([])` below. The card then drops its "Consulted: …"
+ * line and silently presents a team answer as if one agent wrote it — the same shape as the drift bug this module's
+ * sibling (`src/lib/admin-stats.ts`) was fixed for, and one specialist rename away from being real: `agent` is a
+ * specialist's name from `src/lib/advisor.ts`, so renaming `pricing` to something over 40 characters would do it.
+ */
 export const delegation = z.object({
-  agent: z.string().max(40),
+  agent: trimmed(40),
   llmCalls: z.number().catch(0),
   outcome: z.string().max(40).catch(""),
 });
 
+/**
+ * Every field falls back on its own, so one surprise never blanks the card. The two array caps are deliberately
+ * above what the write path can produce, so neither can empty its list in practice: `output.figures` is capped at
+ * 8 by `adviceOutput`, and a dropped figure comes from one of those, so `droppedFigures` cannot reach 16; the
+ * coordinator refuses a fourth delegation (`TEAM_MAX_DELEGATIONS = 3`), so `delegations` cannot reach 8. They stay
+ * as caps rather than becoming trims because a list longer than the cap could only come from a hand-written row,
+ * and dropping the overflow silently would understate the count the card prints.
+ */
 const checksShape = z
   .object({
     droppedFigures: z.array(droppedFigure).max(16).catch([]),
@@ -43,7 +63,8 @@ const checksShape = z
     fixedAnswer: z.boolean().catch(false),
     verdictReplaced: z.boolean().catch(false),
     delegations: z.array(delegation).max(8).catch([]),
-    figureAgents: z.record(z.string(), z.string().max(40)).catch({}),
+    // Trimmed, not capped: a long value would empty the whole record and attribute every figure to "Advisor".
+    figureAgents: z.record(z.string(), trimmed(40)).catch({}),
     engine: z.string().max(20).nullable().catch(null),
   })
   .partial()

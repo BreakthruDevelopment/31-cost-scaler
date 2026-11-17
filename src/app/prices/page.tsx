@@ -82,8 +82,13 @@ export default async function PricesPage({ searchParams }: PageProps<"/prices">)
       ) : (
         table.groups.map((group) => (
           // A cloud with a lot of rows starts folded: the whole table is thousands of rows, and at 375px that is a
-          // page nobody can scroll. The count is on the header either way, and the rows are in the HTML, so
-          // find-in-page still works.
+          // page nobody can scroll. The count is on the header either way, and the rows are in the HTML, so the
+          // server response and `curl | grep` have them.
+          //
+          // The browser's find-in-page does NOT see them: a folded panel is `hidden`, which is `display: none`, and
+          // Ctrl+F skips that subtree. (`hidden="until-found"` would make it searchable, with a `beforematch`
+          // handler to sync the toggle; that is a change nobody can verify without driving a real browser's find
+          // bar, so it is not claimed here.) Use the cloud and component filters above to narrow the table instead.
           <Panel
             key={group.cloud}
             title={cloudLabel(group.cloud)}

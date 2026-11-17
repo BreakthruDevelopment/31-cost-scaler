@@ -147,6 +147,17 @@ describe.skipIf(!url)("price refresh (Postgres)", () => {
       expect(run.rows_quarantined).toBe(1);
       expect(run.detail.quarantined).toEqual([{ cloud: "aws", skuKey: "vm.2vcpu-8gb", oldMicros: 10_000, newMicros: 96_000, reason: "jump_over_3x" }]);
       expect(await state()).toMatchObject({ usd_micros: "10000", status: "quarantined" });
+
+      // What /admin prints as the "Rejected value" has to be the refused 96,000, not the 10,000 the row kept —
+      // reading it off the row showed the old, valid price and never the one that tripped the rule.
+      const { listQuarantinedPrices, quarantineKey, quarantineRejections } = await import("@/lib/admin-stats");
+      const listed = (await listQuarantinedPrices(SYSTEM)).find((p) => p.skuKey === "vm.2vcpu-8gb")!;
+      expect(listed.usdMicros).toBe(10_000);
+      expect((await quarantineRejections(SYSTEM)).get(quarantineKey(listed))).toMatchObject({
+        rejectedMicros: 96_000,
+        previousMicros: 10_000,
+        reason: "jump_over_3x",
+      });
     });
   });
 

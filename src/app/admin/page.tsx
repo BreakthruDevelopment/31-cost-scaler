@@ -2,7 +2,16 @@ import type { Metadata } from "next";
 import { RefreshButton } from "@/components/admin/refresh-button";
 import { COMPONENT_LABEL, UNIT_LABEL, cloudLabel, fetchedOn, formatUnitUsd, safeSourceHref, sourceHost } from "@/components/prices/format";
 import { type Column, DataList, PageIntro, Panel, StatGrid, StatTile, StatusBadge, type Status } from "@/components/ui";
-import { MAX_QUARANTINED_SHOWN, adminStats, listQuarantinedPrices, profileDrift } from "@/lib/admin-stats";
+import {
+  MAX_QUARANTINED_SHOWN,
+  QUARANTINE_REASON,
+  QUARANTINE_RUNS_SCANNED,
+  adminStats,
+  listQuarantinedPrices,
+  profileDrift,
+  quarantineKey,
+  quarantineRejections,
+} from "@/lib/admin-stats";
 import { requireRoleOrRedirect } from "@/lib/auth/session";
 import { ADMIN_REFRESH_WINDOW_SECONDS, STALE_AFTER_HOURS } from "@/lib/price-ingest/refresh";
 
@@ -35,7 +44,12 @@ function stamp(at: Date | null): string {
 
 export default async function AdminPage() {
   const admin = await requireRoleOrRedirect("admin");
-  const [stats, quarantined, drift] = await Promise.all([adminStats(admin), listQuarantinedPrices(admin), profileDrift(admin)]);
+  const [stats, quarantined, rejected, drift] = await Promise.all([
+    adminStats(admin),
+    listQuarantinedPrices(admin),
+    quarantineRejections(admin),
+    profileDrift(admin),
+  ]);
 
   type RefreshRow = (typeof stats.refresh)[number];
   const refreshColumns: Column<RefreshRow>[] = [
@@ -83,16 +97,38 @@ export default async function AdminPage() {
     { key: "cloud", header: "Cloud", cell: (r) => <span className="wrap-anywhere">{cloudLabel(r.cloud)}</span> },
     { key: "component", header: "Component", cell: (r) => <span className="wrap-anywhere">{COMPONENT_LABEL[r.component]}</span> },
     {
-      key: "price",
+      key: "rejected",
       header: "Rejected value",
+      cell: (r) => {
+        // Never r.usdMicros: quarantining changes the row's status only, so that field is still the value in use.
+        const note = rejected.get(quarantineKey(r));
+        if (!note) {
+          return (
+            <span className="block min-w-0 text-sm text-muted wrap-anywhere">
+              Not recorded in the last {QUARANTINE_RUNS_SCANNED} runs. Check the source.
+            </span>
+          );
+        }
+        return (
+          <span className="block min-w-0">
+            <span className="block font-semibold tabular-nums text-blocked wrap-anywhere">{formatUnitUsd(note.rejectedMicros)}</span>
+            <span className="block text-sm text-muted wrap-anywhere">
+              {UNIT_LABEL[r.unit]} · {QUARANTINE_REASON[note.reason] ?? "refused by a sanity check"} · refused {fetchedOn(note.at)}
+            </span>
+          </span>
+        );
+      },
+    },
+    {
+      key: "inuse",
+      header: "Value still in use",
       cell: (r) => (
         <span className="block min-w-0">
           <span className="block font-semibold tabular-nums wrap-anywhere">{formatUnitUsd(r.usdMicros)}</span>
-          <span className="block text-sm text-muted wrap-anywhere">{UNIT_LABEL[r.unit]}</span>
+          <span className="block text-sm text-muted wrap-anywhere">{UNIT_LABEL[r.unit]} · accepted {fetchedOn(r.fetchedAt)}</span>
         </span>
       ),
     },
-    { key: "fetched", header: "Fetched", className: "whitespace-nowrap", cell: (r) => fetchedOn(r.fetchedAt) },
     {
       key: "source",
       header: "Source",
@@ -158,8 +194,9 @@ export default async function AdminPage() {
       <Panel title="Quarantined prices" count={stats.prices.quarantined}>
         <p className="mb-4 text-sm text-muted">
           A fetched price outside its sanity bounds, or more than 3x its last value, is quarantined: the previous
-          value stays in use and nothing is shown as $0. Check the source link; if the new price is real, the next
-          refresh after the bounds are widened will take it.
+          value stays in use and nothing is shown as $0. Both numbers are below — what was refused, and what the
+          estimates still use — so the two can be compared before the bounds are changed. Check the source link; if
+          the new price is real, the next refresh after the bounds are widened will take it.
         </p>
         <DataList
           caption="Quarantined price rows"
